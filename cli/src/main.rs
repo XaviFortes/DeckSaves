@@ -345,7 +345,7 @@ async fn start_service(_user: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::process::Command;
-        let cmd = if user {
+        let cmd = if _user {
             Command::new("systemctl")
                 .args(&["--user", "start", "decksaves.service"])
                 .output()

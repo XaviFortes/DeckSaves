@@ -5,8 +5,10 @@ A cross-platform game save synchronization tool with support for cloud storage (
 ## Features
 
 - **Real-time File Watching**: Monitor game save files for changes using OS-native file system events
+- **Background Daemon**: Run as a system service for continuous monitoring
 - **Cloud Sync**: Upload and download saves to/from AWS S3
 - **Peer-to-Peer Sync**: WebSocket-based synchronization between devices (optional)
+- **Cross-Platform Service Management**: Install, start, stop, and manage as system services on Linux (systemd), macOS (launchd), and Windows (Windows Services)
 - **Batched Operations**: Intelligently batches rapid file changes to avoid sync thrashing
 - **File Lock Detection**: Prevents syncing files that are currently in use by games
 - **CLI Interface**: Full command-line interface with `clap` for argument parsing
@@ -92,6 +94,76 @@ game-sync watch "My Game"
 
 This will monitor the configured paths and automatically sync when changes are detected.
 
+### Run as Background Daemon
+
+For continuous monitoring, you can run DeckSaves as a background daemon:
+
+```bash
+game-sync daemon
+```
+
+This will start the daemon which will:
+- Monitor all configured games simultaneously
+- Automatically sync changes when detected
+- Handle graceful shutdown on SIGTERM
+- Provide systemd integration on Linux (watchdog, readiness notifications)
+- Log to files instead of console
+
+### Service Management
+
+DeckSaves can be installed and managed as a system service on all supported platforms.
+
+#### Install Service
+
+```bash
+# Install as system service (requires admin/root)
+game-sync service install
+
+# Install as user service
+game-sync service install --user
+```
+
+#### Start/Stop Service
+
+```bash
+# Start the service
+game-sync service start [--user]
+
+# Stop the service
+game-sync service stop [--user]
+
+# Check service status
+game-sync service status [--user]
+```
+
+#### Uninstall Service
+
+```bash
+# Uninstall service
+game-sync service uninstall [--user]
+```
+
+#### Platform-Specific Service Details
+
+**Linux (systemd)**:
+- System service: `/etc/systemd/system/decksaves.service`
+- User service: `~/.config/systemd/user/decksaves.service`
+- Supports watchdog and readiness notifications
+- Automatic restart on failure
+- Logs via systemd journal
+
+**macOS (launchd)**:
+- System service: `/Library/LaunchDaemons/com.decksaves.game-sync.plist`
+- User service: `~/Library/LaunchAgents/com.decksaves.game-sync.plist`
+- Automatic start on boot/login
+- Automatic restart on crash
+
+**Windows (Windows Services)**:
+- Registered as "DeckSaves" service
+- Automatic startup
+- Runs in background without user session
+- Managed via Services Control Manager
+
 ### Configuration
 
 The configuration file is located at:
@@ -122,6 +194,52 @@ save_paths = [
 ]
 sync_enabled = true
 ```
+
+### Daemon Configuration
+
+When running in daemon mode, DeckSaves monitors all games with `sync_enabled = true` simultaneously. The daemon performs periodic health checks and configuration reloads, allowing you to add/remove games without restarting the service.
+
+**Daemon Features:**
+- Monitors all enabled games simultaneously
+- Automatic configuration reload (checks every 60 seconds)
+- Health checks and watchdog support
+- Graceful shutdown on SIGTERM
+- File logging with rotation (falls back to console if permissions insufficient)
+- Platform-specific service integration
+
+**Configuration for Daemon Mode:**
+
+```toml
+# ~/.config/game-sync/config.toml (Linux)
+# ~/Library/Application Support/com.decksaves.game-sync/config.toml (macOS)
+
+s3_bucket = "my-game-saves"
+s3_region = "us-east-1"
+peer_sync_enabled = false
+
+[games.elden-ring]
+name = "Elden Ring"
+save_paths = [
+    "~/AppData/Roaming/EldenRing/76561198000000000/ER0000.sl2"
+]
+sync_enabled = true
+
+[games.cyberpunk]
+name = "Cyberpunk 2077"
+save_paths = [
+    "~/Saved Games/CD Projekt Red/Cyberpunk 2077"
+]
+sync_enabled = true
+
+[games.steam-deck-game]
+name = "Steam Deck Game"
+save_paths = [
+    "~/.local/share/Steam/steamapps/compatdata/12345/pfx/drive_c/users/steamuser/Documents/SaveGame"
+]
+sync_enabled = false  # This game won't be monitored by daemon
+```
+
+The daemon will automatically start monitoring `elden-ring` and `cyberpunk` but skip `steam-deck-game` since it's disabled.
 
 ## AWS S3 Setup
 
@@ -206,6 +324,11 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Roadmap
 
+- [x] Daemon mode and background service
+- [x] Cross-platform service management (systemd, launchd, Windows Services)
+- [x] Signal handling and graceful shutdown
+- [x] File logging with rotation
+- [x] Health checks and watchdog support
 - [ ] GUI implementation with Tauri
 - [ ] Conflict resolution strategies
 - [ ] Incremental/delta sync for large save files
@@ -214,3 +337,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [ ] Steam Cloud integration
 - [ ] Automatic game detection
 - [ ] Backup versioning and restoration
+- [ ] Web-based configuration interface
+- [ ] Real-time sync status dashboard

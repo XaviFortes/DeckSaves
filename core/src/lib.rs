@@ -14,6 +14,7 @@ use tracing::{info, warn, error, debug};
 pub mod config;
 pub mod sync;
 pub mod watcher;
+pub mod daemon;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameConfig {

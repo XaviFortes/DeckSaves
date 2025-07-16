@@ -15,6 +15,9 @@ pub mod config;
 pub mod sync;
 pub mod watcher;
 pub mod daemon;
+pub mod crypto;
+
+use crypto::CredentialCrypto;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameConfig {
@@ -27,6 +30,10 @@ pub struct GameConfig {
 pub struct SyncConfig {
     pub s3_bucket: Option<String>,
     pub s3_region: Option<String>,
+    #[serde(default)]
+    pub aws_access_key_id: Option<String>,
+    #[serde(default)]
+    pub aws_secret_access_key: Option<String>,
     pub peer_sync_enabled: bool,
     pub websocket_url: Option<String>,
     pub games: HashMap<String, GameConfig>,
@@ -37,10 +44,88 @@ impl Default for SyncConfig {
         Self {
             s3_bucket: None,
             s3_region: Some("us-east-1".to_string()),
+            aws_access_key_id: None,
+            aws_secret_access_key: None,
             peer_sync_enabled: false,
             websocket_url: None,
             games: HashMap::new(),
         }
+    }
+}
+
+impl SyncConfig {
+    /// Get decrypted AWS access key
+    pub fn get_aws_access_key(&self) -> Result<Option<String>> {
+        match &self.aws_access_key_id {
+            Some(encrypted) if !encrypted.is_empty() => {
+                let crypto = CredentialCrypto::new()?;
+                Ok(Some(crypto.decrypt(encrypted)?))
+            }
+            _ => Ok(None)
+        }
+    }
+
+    /// Get decrypted AWS secret key
+    pub fn get_aws_secret_key(&self) -> Result<Option<String>> {
+        match &self.aws_secret_access_key {
+            Some(encrypted) if !encrypted.is_empty() => {
+                let crypto = CredentialCrypto::new()?;
+                Ok(Some(crypto.decrypt(encrypted)?))
+            }
+            _ => Ok(None)
+        }
+    }
+
+    /// Set encrypted AWS access key
+    pub fn set_aws_access_key(&mut self, key: &str) -> Result<()> {
+        println!("DEBUG CRYPTO: set_aws_access_key called with key length: {}", key.len());
+        if key.is_empty() {
+            println!("DEBUG CRYPTO: Key is empty, setting to None");
+            self.aws_access_key_id = None;
+        } else {
+            println!("DEBUG CRYPTO: Encrypting key...");
+            let crypto = CredentialCrypto::new().map_err(|e| {
+                println!("DEBUG CRYPTO: Failed to create crypto: {}", e);
+                e
+            })?;
+            let encrypted = crypto.encrypt(key).map_err(|e| {
+                println!("DEBUG CRYPTO: Failed to encrypt: {}", e);
+                e
+            })?;
+            println!("DEBUG CRYPTO: Encrypted key length: {}", encrypted.len());
+            println!("DEBUG CRYPTO: About to set aws_access_key_id to encrypted value");
+            self.aws_access_key_id = Some(encrypted.clone());
+            println!("DEBUG CRYPTO: Set aws_access_key_id, is_some: {}, value: {}", 
+                     self.aws_access_key_id.is_some(),
+                     encrypted.chars().take(10).collect::<String>());
+        }
+        Ok(())
+    }
+
+    /// Set encrypted AWS secret key
+    pub fn set_aws_secret_key(&mut self, key: &str) -> Result<()> {
+        println!("DEBUG CRYPTO: set_aws_secret_key called with key length: {}", key.len());
+        if key.is_empty() {
+            println!("DEBUG CRYPTO: Secret key is empty, setting to None");
+            self.aws_secret_access_key = None;
+        } else {
+            println!("DEBUG CRYPTO: Encrypting secret key...");
+            let crypto = CredentialCrypto::new().map_err(|e| {
+                println!("DEBUG CRYPTO: Failed to create crypto for secret: {}", e);
+                e
+            })?;
+            let encrypted = crypto.encrypt(key).map_err(|e| {
+                println!("DEBUG CRYPTO: Failed to encrypt secret: {}", e);
+                e
+            })?;
+            println!("DEBUG CRYPTO: Encrypted secret key length: {}", encrypted.len());
+            println!("DEBUG CRYPTO: About to set aws_secret_access_key to encrypted value");
+            self.aws_secret_access_key = Some(encrypted.clone());
+            println!("DEBUG CRYPTO: Set aws_secret_access_key, is_some: {}, value: {}", 
+                     self.aws_secret_access_key.is_some(),
+                     encrypted.chars().take(10).collect::<String>());
+        }
+        Ok(())
     }
 }
 
@@ -92,7 +177,33 @@ pub struct GameSaveSync {
 impl GameSaveSync {
     pub async fn new(config: SyncConfig) -> Result<Self> {
         let s3_client = if config.s3_bucket.is_some() {
-            let aws_config = aws_config::defaults(BehaviorVersion::latest()).load().await;
+            // Get decrypted credentials
+            let access_key = config.get_aws_access_key()?;
+            let secret_key = config.get_aws_secret_key()?;
+            
+            let aws_config = if let (Some(access_key), Some(secret_key)) = (access_key, secret_key) {
+                // Create custom credentials
+                use aws_credential_types::Credentials;
+                let credentials = Credentials::new(
+                    access_key,
+                    secret_key,
+                    None,
+                    None,
+                    "decksaves"
+                );
+                
+                aws_config::defaults(BehaviorVersion::latest())
+                    .region(aws_config::Region::new(config.s3_region.clone().unwrap_or_else(|| "us-east-1".to_string())))
+                    .credentials_provider(credentials)
+                    .load()
+                    .await
+            } else {
+                // Use default credentials (IAM role, environment, etc.)
+                aws_config::defaults(BehaviorVersion::latest())
+                    .load()
+                    .await
+            };
+            
             Some(Client::new(&aws_config))
         } else {
             None
@@ -102,6 +213,7 @@ impl GameSaveSync {
     }
 
     pub async fn sync_game(&self, game_name: &str) -> Result<()> {
+        debug!("sync_game starting for: {}", game_name);
         let game_config = self.config.games.get(game_name)
             .context("Game not found in configuration")?;
 
@@ -110,10 +222,14 @@ impl GameSaveSync {
             return Ok(());
         }
 
+        debug!("Processing {} save paths for game: {}", game_config.save_paths.len(), game_name);
         for save_path in &game_config.save_paths {
+            debug!("Syncing save path: {}", save_path);
             self.sync_file(save_path, game_name).await?;
+            debug!("Completed syncing save path: {}", save_path);
         }
 
+        debug!("sync_game completed successfully for: {}", game_name);
         Ok(())
     }
 

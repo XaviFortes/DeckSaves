@@ -8,6 +8,7 @@ notify = "5.1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "signal"] }
 aws-sdk-s3 = "1.0"
 aws-config = "1.0"
+aws-credential-types = "1.0"
 tokio-tungstenite = "0.20"
 futures-util = "0.3"
 anyhow = "1.0"
@@ -18,6 +19,9 @@ tracing = "0.1"
 tracing-appender = "0.2"
 directories = "5.0"
 toml = "0.8"
+aes-gcm = "0.10"
+base64 = "0.21"
+rand = "0.8"
 signal-hook = "0.3"
 signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 

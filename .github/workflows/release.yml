@@ -52,10 +52,10 @@ jobs:
             args: '--target aarch64-apple-darwin'
             target: 'aarch64-apple-darwin'
             arch: 'arm64'
-          - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
-            target: 'x86_64-apple-darwin'
-            arch: 'x64'
+          # - platform: 'macos-latest'
+            # args: '--target x86_64-apple-darwin'
+            # target: 'x86_64-apple-darwin'
+            # arch: 'x64'
           - platform: 'ubuntu-22.04'
             args: ''
             target: 'x86_64-unknown-linux-gnu'
@@ -99,7 +99,8 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Update version in Cargo.toml files
+      - name: Update version in Cargo.toml files (Unix)
+        if: ${{ !contains(matrix.platform, 'Windows') }}
         run: |
           VERSION=${{ needs.prepare-release.outputs.version }}
           # Remove 'v' prefix if present
@@ -111,20 +112,76 @@ jobs:
           sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" cli/Cargo.toml
           sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" tauri-ui/Cargo.toml
 
-      - name: Update version in package.json
+      - name: Update version in Cargo.toml files (Windows)
+        if: ${{ contains(matrix.platform, 'Windows') }}
+        run: |
+          $VERSION = "${{ needs.prepare-release.outputs.version }}"
+          # Remove 'v' prefix if present
+          $VERSION = $VERSION -replace '^v', ''
+          
+          # Update version in all Cargo.toml files
+          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content Cargo.toml
+          (Get-Content core/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content core/Cargo.toml
+          (Get-Content cli/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content cli/Cargo.toml
+          (Get-Content tauri-ui/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content tauri-ui/Cargo.toml
+
+      - name: Update version in package.json (Unix)
+        if: ${{ !contains(matrix.platform, 'Windows') }}
         run: |
           VERSION=${{ needs.prepare-release.outputs.version }}
           VERSION=${VERSION#v}
-          npm version $VERSION --no-git-tag-version
+          # Check if version needs to be updated
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+            npm version $VERSION --no-git-tag-version
+          else
+            echo "Version already up to date: $VERSION"
+          fi
 
-      - name: Update version in tauri.conf.json
+      - name: Update version in package.json (Windows)
+        if: ${{ contains(matrix.platform, 'Windows') }}
+        run: |
+          $VERSION = "${{ needs.prepare-release.outputs.version }}"
+          $VERSION = $VERSION -replace '^v', ''
+          # Check if version needs to be updated
+          $CURRENT_VERSION = (Get-Content package.json | ConvertFrom-Json).version
+          if ($CURRENT_VERSION -ne $VERSION) {
+            npm version $VERSION --no-git-tag-version
+          } else {
+            Write-Output "Version already up to date: $VERSION"
+          }
+
+      - name: Update version in tauri.conf.json (Unix)
+        if: ${{ !contains(matrix.platform, 'Windows') }}
         run: |
           VERSION=${{ needs.prepare-release.outputs.version }}
           VERSION=${VERSION#v}
           cd tauri-ui
-          npm version $VERSION --no-git-tag-version
+          # Check if version needs to be updated
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+            npm version $VERSION --no-git-tag-version
+          else
+            echo "Version already up to date: $VERSION"
+          fi
           # Update tauri.conf.json
           sed -i.bak "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" tauri.conf.json
+
+      - name: Update version in tauri.conf.json (Windows)
+        if: ${{ contains(matrix.platform, 'Windows') }}
+        run: |
+          $VERSION = "${{ needs.prepare-release.outputs.version }}"
+          $VERSION = $VERSION -replace '^v', ''
+          Set-Location tauri-ui
+          # Check if version needs to be updated
+          $CURRENT_VERSION = (Get-Content package.json | ConvertFrom-Json).version
+          if ($CURRENT_VERSION -ne $VERSION) {
+            npm version $VERSION --no-git-tag-version
+          } else {
+            Write-Output "Version already up to date: $VERSION"
+          }
+          # Update tauri.conf.json
+          (Get-Content tauri.conf.json) -replace '"version": ".*"', "`"version`": `"$VERSION`"" | Set-Content tauri.conf.json
 
       - name: Build CLI
         run: |

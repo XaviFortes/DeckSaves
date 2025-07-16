@@ -1,4 +1,4 @@
-use tauri::{command, State, AppHandle, Manager};
+use tauri::{command, State, AppHandle, Emitter};
 use decksaves_core::{
     config::ConfigManager, 
     GameSaveSync, 
@@ -146,7 +146,7 @@ pub async fn start_watching_game(
     // Will implement proper async watcher management later
 
     // Emit event to frontend
-    app_handle.emit_all("game-watch-started", &game_name).unwrap_or_else(|e| {
+    app_handle.emit("game-watch-started", &game_name).unwrap_or_else(|e| {
         error!("Failed to emit game-watch-started event: {}", e);
     });
 
@@ -169,7 +169,7 @@ pub async fn stop_watching_game(
     // Will implement proper async watcher management later
 
     // Emit event to frontend
-    app_handle.emit_all("game-watch-stopped", &game_name).unwrap_or_else(|e| {
+    app_handle.emit("game-watch-stopped", &game_name).unwrap_or_else(|e| {
         error!("Failed to emit game-watch-stopped event: {}", e);
     });
 
@@ -189,8 +189,6 @@ pub async fn get_watching_games(state: State<'_, AppState>) -> Result<Vec<String
 // File system commands
 #[command]
 pub async fn select_folder() -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-    
     // For now, return an error asking user to implement this differently
     // In Tauri v2, dialogs need to be called from the frontend
     Err("Please use the frontend dialog API for folder selection in Tauri v2".to_string())
@@ -198,13 +196,9 @@ pub async fn select_folder() -> Result<Option<String>, String> {
 
 #[command]
 pub async fn select_file() -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-    
     // For now, return an error asking user to implement this differently
     // In Tauri v2, dialogs need to be called from the frontend
     Err("Please use the frontend dialog API for file selection in Tauri v2".to_string())
-    
-    Ok(file.map(|p| p.display().to_string()))
 }
 
 #[command]
@@ -261,7 +255,7 @@ pub async fn get_system_info() -> Result<HashMap<String, String>, String> {
 // Notification commands
 #[command]
 pub async fn show_notification(title: String, body: String, app_handle: AppHandle) -> Result<(), String> {
-    app_handle.emit_all("notification", serde_json::json!({
+    app_handle.emit("notification", serde_json::json!({
         "title": title,
         "body": body,
         "timestamp": std::time::SystemTime::now()

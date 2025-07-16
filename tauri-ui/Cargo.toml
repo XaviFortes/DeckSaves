@@ -10,7 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 decksaves_core = { path = "../core", package = "core" }
-tauri = { version = "2.1", features = ["tray-icon", "macos-private-api"] }
+tauri = { version = "2.1", features = ["tray-icon"] }
 tauri-plugin-dialog = "2.0"
 tauri-plugin-fs = "2.0"
 tauri-plugin-notification = "2.0"

@@ -1,19 +1,19 @@
-use tauri::{Manager, AppHandle, tray::{TrayIconBuilder, TrayIconEvent}, menu::{Menu, MenuItem}};
+use tauri::{Manager, AppHandle, tray::{TrayIconBuilder, TrayIconEvent}, menu::{Menu, MenuItem, PredefinedMenuItem}, Emitter, Listener};
 use tracing::info;
 
 mod commands;
 use commands::AppState;
 
-fn create_tray_menu() -> Menu<tauri::Wry> {
-    let quit = MenuItem::with_id("quit", "Quit", true, None::<&str>);
-    let show = MenuItem::with_id("show", "Show", true, None::<&str>);
-    let sync_all = MenuItem::with_id("sync_all", "Sync All Games", true, None::<&str>);
+fn create_tray_menu(app: &AppHandle) -> Menu<tauri::Wry> {
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>).unwrap();
+    let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>).unwrap();
+    let sync_all = MenuItem::with_id(app, "sync_all", "Sync All Games", true, None::<&str>).unwrap();
     
-    Menu::with_items(&[
+    Menu::with_items(app, &[
         &show,
-        &MenuItem::separator(),
+        &PredefinedMenuItem::separator(app).unwrap(),
         &sync_all,
-        &MenuItem::separator(),
+        &PredefinedMenuItem::separator(app).unwrap(),
         &quit,
     ]).unwrap()
 }
@@ -24,24 +24,6 @@ fn handle_tray_event(app: &AppHandle, event: TrayIconEvent) {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
-            }
-        }
-        TrayIconEvent::MenuItemClick { id, .. } => {
-            match id.as_ref() {
-                "quit" => {
-                    std::process::exit(0);
-                }
-                "show" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-                "sync_all" => {
-                    // Trigger sync all via event
-                    let _ = app.emit("sync-all-requested", ());
-                }
-                _ => {}
             }
         }
         _ => {}
@@ -87,17 +69,35 @@ async fn main() {
         ])
         .setup(|app| {
             // Setup tray icon
-            let tray_menu = create_tray_menu();
+            let tray_menu = create_tray_menu(app.handle());
             let _tray = TrayIconBuilder::with_id("main-tray")
                 .menu(&tray_menu)
                 .icon(app.default_window_icon().unwrap().clone())
                 .on_tray_icon_event(move |tray, event| {
                     handle_tray_event(tray.app_handle(), event);
                 })
+                .on_menu_event(move |app, event| {
+                    match event.id().as_ref() {
+                        "quit" => {
+                            std::process::exit(0);
+                        }
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "sync_all" => {
+                            // Trigger sync all via event
+                            let _ = app.emit("sync-all-requested", ());
+                        }
+                        _ => {}
+                    }
+                })
                 .build(app)?;
 
             // Setup notifications
-            let app_handle = app.handle();
+            let app_handle = app.handle().clone();
             
             // Register app event listeners
             let _app_handle = app_handle.clone();

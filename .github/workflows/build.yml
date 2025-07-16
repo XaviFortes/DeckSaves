@@ -130,12 +130,22 @@ jobs:
           projectPath: './tauri-ui'
           args: '--verbose ${{ matrix.args }}'
 
-      - name: Debug - List build output
+      - name: Debug - List build output (Unix)
+        if: matrix.platform != 'windows-latest'
         run: |
           echo "Contents of target/release/bundle:"
           find target -name "*.dmg" -o -name "*.app" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" 2>/dev/null || echo "No bundle files found"
           echo "Contents of target:"
           find target -name "game-sync*" 2>/dev/null || echo "No CLI files found"
+
+      - name: Debug - List build output (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          echo "Contents of target directory:"
+          dir target /s /b
+          echo "Looking for specific files:"
+          if (Test-Path "target\release\game-sync.exe") { echo "Found: target\release\game-sync.exe" } else { echo "Not found: target\release\game-sync.exe" }
+          if (Test-Path "target\x86_64-pc-windows-msvc\release\game-sync.exe") { echo "Found: target\x86_64-pc-windows-msvc\release\game-sync.exe" } else { echo "Not found: target\x86_64-pc-windows-msvc\release\game-sync.exe" }
 
       - name: Upload CLI artifacts (Unix)
         if: matrix.platform != 'windows-latest'

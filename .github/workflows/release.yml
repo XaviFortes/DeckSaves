@@ -42,7 +42,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
   build-release:
-    name: Build Release (${{ matrix.platform }})
+    name: Build Release (${{ matrix.name }})
     needs: prepare-release
     strategy:
       fail-fast: false
@@ -58,26 +58,24 @@ jobs:
             # target: 'x86_64-apple-darwin'
             # arch: 'x64'
           - name: 'ubuntu-x64'
-            labels: ['ubuntu-24.04', 'x64']
-            # platform: 'ubuntu-22.04'
+            labels: ['ubuntu-22.04']
             args: ''
             target: 'x86_64-unknown-linux-gnu'
             arch: 'x64'
           - name: 'windows-x64'
             labels: ['self-hosted', 'Windows', 'X64']
-            # platform: 'self-hosted Windows X64'
             args: '--target x86_64-pc-windows-msvc'
             target: 'x86_64-pc-windows-msvc'
             arch: 'x64'
 
     runs-on: ${{ matrix.labels }}
-    continue-on-error: ${{ contains(matrix.platform, 'Windows') }}
+    continue-on-error: ${{ contains(matrix.name, 'windows') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install dependencies (Ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.name == 'ubuntu-x64'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
@@ -105,7 +103,7 @@ jobs:
         run: npm run build
 
       - name: Update version in Cargo.toml files (Unix)
-        if: ${{ !contains(matrix.platform, 'Windows') }}
+        if: ${{ !contains(matrix.name, 'windows') }}
         run: |
           VERSION=${{ needs.prepare-release.outputs.version }}
           # Remove 'v' prefix if present
@@ -118,7 +116,7 @@ jobs:
           sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" tauri-ui/Cargo.toml
 
       - name: Update version in Cargo.toml files (Windows)
-        if: ${{ contains(matrix.platform, 'Windows') }}
+        if: ${{ contains(matrix.name, 'windows') }}
         run: |
           $VERSION = "${{ needs.prepare-release.outputs.version }}"
           # Remove 'v' prefix if present
@@ -131,7 +129,7 @@ jobs:
           (Get-Content tauri-ui/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content tauri-ui/Cargo.toml
 
       - name: Update version in package.json (Unix)
-        if: ${{ !contains(matrix.platform, 'Windows') }}
+        if: ${{ !contains(matrix.name, 'windows') }}
         run: |
           VERSION=${{ needs.prepare-release.outputs.version }}
           VERSION=${VERSION#v}
@@ -144,7 +142,7 @@ jobs:
           fi
 
       - name: Update version in package.json (Windows)
-        if: ${{ contains(matrix.platform, 'Windows') }}
+        if: ${{ contains(matrix.name, 'windows') }}
         run: |
           $VERSION = "${{ needs.prepare-release.outputs.version }}"
           $VERSION = $VERSION -replace '^v', ''
@@ -157,7 +155,7 @@ jobs:
           }
 
       - name: Update version in tauri.conf.json (Unix)
-        if: ${{ !contains(matrix.platform, 'Windows') }}
+        if: ${{ !contains(matrix.name, 'windows') }}
         run: |
           VERSION=${{ needs.prepare-release.outputs.version }}
           VERSION=${VERSION#v}
@@ -173,7 +171,7 @@ jobs:
           sed -i.bak "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" tauri.conf.json
 
       - name: Update version in tauri.conf.json (Windows)
-        if: ${{ contains(matrix.platform, 'Windows') }}
+        if: ${{ contains(matrix.name, 'windows') }}
         run: |
           $VERSION = "${{ needs.prepare-release.outputs.version }}"
           $VERSION = $VERSION -replace '^v', ''
@@ -224,13 +222,13 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Generate checksums (Unix)
-        if: ${{ !contains(matrix.platform, 'Windows') }}
+        if: ${{ !contains(matrix.name, 'windows') }}
         run: |
           cd target/${{ matrix.target }}/release
           sha256sum game-sync > game-sync-${{ matrix.target }}.sha256
 
       - name: Generate checksums (Windows)
-        if: ${{ contains(matrix.platform, 'Windows') }}
+        if: ${{ contains(matrix.name, 'windows') }}
         run: |
           cd target/${{ matrix.target }}/release
           certutil -hashfile game-sync.exe SHA256 > game-sync-${{ matrix.target }}.sha256

@@ -243,14 +243,97 @@ The daemon will automatically start monitoring `elden-ring` and `cyberpunk` but 
 
 ## AWS S3 Setup
 
+### Security Best Practices
+
+**⚠️ Important: Never put AWS credentials directly in config files!**
+
+### 1. Create IAM User with Minimal Permissions
+
+Create a dedicated IAM user specifically for DeckSaves:
+
+1. Go to AWS IAM Console → Users → Create User
+2. Create user named `decksaves-app` (no console access needed)
+3. Create an Access Key for this user
+
+### 2. Create IAM Policy
+
+Create a custom policy with minimal permissions:
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::your-decksaves-bucket-name",
+                "arn:aws:s3:::your-decksaves-bucket-name/*"
+            ]
+        }
+    ]
+}
+```
+
+### 3. Configure AWS Credentials
+
+**Option A: Environment Variables (Recommended)**
+```bash
+# Linux/macOS
+export AWS_ACCESS_KEY_ID="your-access-key-id"
+export AWS_SECRET_ACCESS_KEY="your-secret-access-key"
+export AWS_DEFAULT_REGION="us-east-1"
+
+# Windows
+set AWS_ACCESS_KEY_ID=your-access-key-id
+set AWS_SECRET_ACCESS_KEY=your-secret-access-key
+set AWS_DEFAULT_REGION=us-east-1
+```
+
+**Option B: AWS Credentials File**
+Create `~/.aws/credentials` (Linux/macOS) or `%USERPROFILE%\.aws\credentials` (Windows):
+```ini
+[default]
+aws_access_key_id = your-access-key-id
+aws_secret_access_key = your-secret-access-key
+region = us-east-1
+```
+
+### 4. Test Your Setup
+
+Test with debug logging to see detailed information:
+
+```bash
+# Enable debug logging to see what's happening
+RUST_LOG=debug ./target/release/game-sync sync "your-game-name"
+```
+
+Common issues and solutions:
+
+- **"Is a directory" error**: Make sure `save_paths` points to files, not directories
+- **"No credentials" error**: Set up AWS credentials using one of the methods above
+- **"Access denied" error**: Check your IAM policy permissions
+- **"Bucket not found" error**: Make sure the bucket name in config matches your actual S3 bucket
+
+### 5. S3 Bucket Security
+
+- Create a **private** S3 bucket (block all public access)
+- Enable versioning for backup protection
+- Consider enabling server-side encryption
+- Use bucket policies to restrict access to your IAM user only
+
 1. Create an AWS S3 bucket for your game saves
 2. Configure AWS credentials using one of these methods:
-   - AWS CLI: `aws configure`
    - Environment variables: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
+   - AWS credentials file: `~/.aws/credentials`
+   - AWS CLI: `aws configure`
    - IAM roles (if running on EC2)
-   - AWS credentials file
-
-3. Update your configuration file with the bucket name and region
+3. Update your configuration file with the bucket name and region (never put credentials in the config file!)
 
 ## Development
 
@@ -329,7 +412,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [x] Signal handling and graceful shutdown
 - [x] File logging with rotation
 - [x] Health checks and watchdog support
-- [ ] GUI implementation with Tauri
+- [x] GUI implementation with Tauri
 - [ ] Conflict resolution strategies
 - [ ] Incremental/delta sync for large save files
 - [ ] Encryption for cloud storage

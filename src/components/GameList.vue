@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { Game } from '../types'
+import { invoke } from '@tauri-apps/api/tauri'
+import type { Game, GameConfig } from '../types'
 
 interface Props {
   games: Game[]
@@ -16,6 +17,186 @@ const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
 const showAddForm = ref(false)
+const showEditForm = ref(false)
+const editingGame = ref<Game | null>(null)
+const loading = ref(false)
+const newGame = ref({
+  name: '',
+  save_paths: [''],
+  sync_enabled: true
+})
+
+const addPath = () => {
+  newGame.value.save_paths.push('')
+}
+
+const removePath = (index: number) => {
+  newGame.value.save_paths.splice(index, 1)
+}
+
+const selectFolder = async (index: number) => {
+  try {
+    const path = await invoke<string>('select_folder')
+    if (path) {
+      newGame.value.save_paths[index] = path
+    }
+  } catch (error) {
+    console.error('Failed to select folder:', error)
+  }
+}
+
+const addGame = async () => {
+  if (!newGame.value.name || newGame.value.save_paths.every(path => !path.trim())) {
+    alert('Please provide a game name and at least one save path')
+    return
+  }
+
+  try {
+    loading.value = true
+    const filteredPaths = newGame.value.save_paths.filter(path => path.trim())
+    
+    await invoke('add_game', { 
+      name: newGame.value.name,
+      displayName: newGame.value.name, 
+      paths: filteredPaths,
+      enabled: newGame.value.sync_enabled
+    })
+    
+    const game: Game = {
+      id: newGame.value.name,
+      name: newGame.value.name,
+      save_paths: filteredPaths,
+      sync_enabled: newGame.value.sync_enabled,
+      last_sync: null,
+      is_watching: false
+    }
+    
+    emit('game-added', game)
+    showAddForm.value = false
+    
+    // Reset form
+    newGame.value = {
+      name: '',
+      save_paths: [''],
+      sync_enabled: true
+    }
+  } catch (error) {
+    console.error('Failed to add game:', error)
+    alert('Failed to add game: ' + error)
+  } finally {
+    loading.value = false
+  }
+}
+
+const editGame = (game: Game) => {
+  editingGame.value = { ...game }
+  newGame.value = {
+    name: game.name,
+    save_paths: [...game.save_paths],
+    sync_enabled: game.sync_enabled
+  }
+  showEditForm.value = true
+}
+
+const updateGame = async () => {
+  if (!editingGame.value || !newGame.value.name || newGame.value.save_paths.every(path => !path.trim())) {
+    alert('Please provide a game name and at least one save path')
+    return
+  }
+
+  try {
+    loading.value = true
+    const filteredPaths = newGame.value.save_paths.filter(path => path.trim())
+    
+    await invoke('update_game', { 
+      name: editingGame.value.id,
+      gameConfig: {
+        name: newGame.value.name,
+        save_paths: filteredPaths,
+        sync_enabled: newGame.value.sync_enabled
+      }
+    })
+    
+    const updatedGame: Game = {
+      id: editingGame.value.id,
+      name: newGame.value.name,
+      save_paths: filteredPaths,
+      sync_enabled: newGame.value.sync_enabled,
+      last_sync: editingGame.value.last_sync,
+      is_watching: editingGame.value.is_watching
+    }
+    
+    emit('game-updated', updatedGame)
+    showEditForm.value = false
+    editingGame.value = null
+    
+    // Reset form
+    newGame.value = {
+      name: '',
+      save_paths: [''],
+      sync_enabled: true
+    }
+  } catch (error) {
+    console.error('Failed to update game:', error)
+    alert('Failed to update game: ' + error)
+  } finally {
+    loading.value = false
+  }
+}
+
+const cancelEdit = () => {
+  showEditForm.value = false
+  editingGame.value = null
+  newGame.value = {
+    name: '',
+    save_paths: [''],
+    sync_enabled: true
+  }
+}
+
+const removeGame = async (game: Game) => {
+  if (!confirm(`Are you sure you want to remove "${game.name}"?`)) {
+    return
+  }
+  
+  try {
+    await invoke('remove_game', { name: game.id })
+    emit('game-removed', game.id)
+  } catch (error) {
+    console.error('Failed to remove game:', error)
+    alert('Failed to remove game: ' + error)
+  }
+}
+
+const syncGame = async (game: Game) => {
+  try {
+    loading.value = true
+    await invoke('sync_game', { game_name: game.id })
+    // Show success feedback
+    alert(`Sync started for ${game.name}`)
+  } catch (error) {
+    console.error('Failed to sync game:', error)
+    alert('Failed to sync game: ' + error)
+  } finally {
+    loading.value = false
+  }
+}
+
+const toggleWatching = async (game: Game) => {
+  try {
+    if (game.is_watching) {
+      await invoke('stop_watching_game', { game_name: game.id })
+    } else {
+      await invoke('start_watching_game', { game_name: game.id })
+    }
+    
+    const updatedGame = { ...game, is_watching: !game.is_watching }
+    emit('game-updated', updatedGame)
+  } catch (error) {
+    console.error('Failed to toggle watching:', error)
+    alert('Failed to toggle auto-sync: ' + error)
+  }
+}
 </script>
 
 <template>
@@ -25,6 +206,7 @@ const showAddForm = ref(false)
       <button 
         class="btn btn-primary"
         @click="showAddForm = true"
+        :disabled="loading"
       >
         Add Game
       </button>
@@ -43,8 +225,20 @@ const showAddForm = ref(false)
         <div class="game-card-header">
           <h3>{{ game.name }}</h3>
           <div class="game-card-actions">
-            <button class="btn btn-small">Edit</button>
-            <button class="btn btn-small btn-danger">Remove</button>
+            <button 
+              class="btn btn-small"
+              @click="editGame(game)"
+              :disabled="loading"
+            >
+              Edit
+            </button>
+            <button 
+              class="btn btn-small btn-danger"
+              @click="removeGame(game)"
+              :disabled="loading"
+            >
+              Remove
+            </button>
           </div>
         </div>
         
@@ -65,18 +259,24 @@ const showAddForm = ref(false)
             <input
               type="checkbox"
               :checked="game.is_watching"
+              @change="toggleWatching(game)"
+              :disabled="loading"
             />
             Auto-sync
           </label>
           
-          <button class="btn btn-primary">
+          <button 
+            class="btn btn-primary"
+            @click="syncGame(game)"
+            :disabled="loading"
+          >
             Sync Now
           </button>
         </div>
       </div>
     </div>
 
-    <!-- Simple add form placeholder -->
+    <!-- Add Game Form -->
     <div v-if="showAddForm" class="modal-overlay">
       <div class="modal">
         <div class="modal-header">
@@ -84,8 +284,146 @@ const showAddForm = ref(false)
           <button @click="showAddForm = false" class="close-btn">×</button>
         </div>
         <div class="modal-content">
-          <p>Add game form coming soon...</p>
-          <button @click="showAddForm = false" class="btn">Close</button>
+          <form @submit.prevent="addGame">
+            <div class="form-group">
+              <label for="game-name">Game Name</label>
+              <input
+                id="game-name"
+                v-model="newGame.name"
+                type="text"
+                class="form-input"
+                placeholder="Enter game name"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label>Save File Paths</label>
+              <div v-for="(path, index) in newGame.save_paths" :key="index" class="path-input-group">
+                <input
+                  v-model="newGame.save_paths[index]"
+                  type="text"
+                  class="form-input"
+                  placeholder="Enter save file path"
+                />
+                <button 
+                  type="button"
+                  class="btn btn-small"
+                  @click="selectFolder(index)"
+                >
+                  Browse
+                </button>
+                <button 
+                  v-if="newGame.save_paths.length > 1"
+                  type="button"
+                  class="btn btn-small btn-danger"
+                  @click="removePath(index)"
+                >
+                  Remove
+                </button>
+              </div>
+              <button 
+                type="button"
+                class="btn btn-small btn-secondary"
+                @click="addPath"
+              >
+                Add Another Path
+              </button>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input
+                  v-model="newGame.sync_enabled"
+                  type="checkbox"
+                />
+                Enable sync for this game
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <button type="button" @click="showAddForm = false" class="btn">Cancel</button>
+              <button type="submit" class="btn btn-primary" :disabled="loading">
+                {{ loading ? 'Adding...' : 'Add Game' }}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Edit Game Form -->
+    <div v-if="showEditForm" class="modal-overlay">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>Edit Game</h3>
+          <button @click="cancelEdit" class="close-btn">×</button>
+        </div>
+        <div class="modal-content">
+          <form @submit.prevent="updateGame">
+            <div class="form-group">
+              <label for="edit-game-name">Game Name</label>
+              <input
+                id="edit-game-name"
+                v-model="newGame.name"
+                type="text"
+                class="form-input"
+                placeholder="Enter game name"
+                required
+              />
+            </div>
+
+            <div class="form-group">
+              <label>Save File Paths</label>
+              <div v-for="(path, index) in newGame.save_paths" :key="index" class="path-input-group">
+                <input
+                  v-model="newGame.save_paths[index]"
+                  type="text"
+                  class="form-input"
+                  placeholder="Enter save file path"
+                />
+                <button 
+                  type="button"
+                  class="btn btn-small"
+                  @click="selectFolder(index)"
+                >
+                  Browse
+                </button>
+                <button 
+                  v-if="newGame.save_paths.length > 1"
+                  type="button"
+                  class="btn btn-small btn-danger"
+                  @click="removePath(index)"
+                >
+                  Remove
+                </button>
+              </div>
+              <button 
+                type="button"
+                class="btn btn-small btn-secondary"
+                @click="addPath"
+              >
+                Add Another Path
+              </button>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input
+                  v-model="newGame.sync_enabled"
+                  type="checkbox"
+                />
+                Enable sync for this game
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <button type="button" @click="cancelEdit" class="btn">Cancel</button>
+              <button type="submit" class="btn btn-primary" :disabled="loading">
+                {{ loading ? 'Updating...' : 'Update Game' }}
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </div>
@@ -331,5 +669,75 @@ const showAddForm = ref(false)
 
 .modal-content {
   padding: 1.5rem;
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-group label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.form-input {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--primary-color);
+  box-shadow: 0 0 0 3px var(--primary-color-alpha);
+}
+
+.path-input-group {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  align-items: center;
+}
+
+.path-input-group .form-input {
+  flex: 1;
+}
+
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: auto;
+}
+
+.form-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: flex-end;
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.btn-secondary {
+  background-color: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border-color: var(--border-color);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
 }
 </style>

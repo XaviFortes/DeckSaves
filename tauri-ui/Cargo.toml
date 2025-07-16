@@ -10,7 +10,11 @@ path = "src/main.rs"
 
 [dependencies]
 decksaves_core = { path = "../core", package = "core" }
-tauri = { version = "1.0", features = ["dialog-open", "dialog-save", "fs-create-dir", "fs-exists", "fs-read-dir", "fs-read-file", "fs-write-file", "notification-all", "path-all", "shell-open", "system-tray"] }
+tauri = { version = "2.1", features = ["tray-icon", "macos-private-api"] }
+tauri-plugin-dialog = "2.0"
+tauri-plugin-fs = "2.0"
+tauri-plugin-notification = "2.0"
+tauri-plugin-shell = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
@@ -20,4 +24,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4"] }
 
 [build-dependencies]
-tauri-build = { version = "1.0", features = [] }
+tauri-build = { version = "2.0", features = [] }

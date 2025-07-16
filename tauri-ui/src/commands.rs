@@ -189,24 +189,20 @@ pub async fn get_watching_games(state: State<'_, AppState>) -> Result<Vec<String
 // File system commands
 #[command]
 pub async fn select_folder() -> Result<Option<String>, String> {
-    use tauri::api::dialog::blocking::FileDialogBuilder;
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
     
-    let folder = FileDialogBuilder::new()
-        .set_title("Select Save Folder")
-        .pick_folder();
-    
-    Ok(folder.map(|p| p.display().to_string()))
+    // For now, return an error asking user to implement this differently
+    // In Tauri v2, dialogs need to be called from the frontend
+    Err("Please use the frontend dialog API for folder selection in Tauri v2".to_string())
 }
 
 #[command]
 pub async fn select_file() -> Result<Option<String>, String> {
-    use tauri::api::dialog::blocking::FileDialogBuilder;
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
     
-    let file = FileDialogBuilder::new()
-        .set_title("Select Save File")
-        .add_filter("Save Files", &["sav", "save", "dat", "json"])
-        .add_filter("All Files", &["*"])
-        .pick_file();
+    // For now, return an error asking user to implement this differently
+    // In Tauri v2, dialogs need to be called from the frontend
+    Err("Please use the frontend dialog API for file selection in Tauri v2".to_string())
     
     Ok(file.map(|p| p.display().to_string()))
 }

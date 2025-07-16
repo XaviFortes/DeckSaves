@@ -1,48 +1,45 @@
-use tauri::{CustomMenuItem, SystemTray, SystemTrayMenu, SystemTrayEvent, Manager, AppHandle};
+use tauri::{Manager, AppHandle, tray::{TrayIconBuilder, TrayIconEvent}, menu::{Menu, MenuItem}};
 use tracing::info;
 
 mod commands;
 use commands::AppState;
 
-fn create_system_tray() -> SystemTray {
-    let quit = CustomMenuItem::new("quit".to_string(), "Quit");
-    let show = CustomMenuItem::new("show".to_string(), "Show");
-    let sync_all = CustomMenuItem::new("sync_all".to_string(), "Sync All Games");
+fn create_tray_menu() -> Menu<tauri::Wry> {
+    let quit = MenuItem::with_id("quit", "Quit", true, None::<&str>);
+    let show = MenuItem::with_id("show", "Show", true, None::<&str>);
+    let sync_all = MenuItem::with_id("sync_all", "Sync All Games", true, None::<&str>);
     
-    let tray_menu = SystemTrayMenu::new()
-        .add_item(show)
-        .add_native_item(tauri::SystemTrayMenuItem::Separator)
-        .add_item(sync_all)
-        .add_native_item(tauri::SystemTrayMenuItem::Separator)
-        .add_item(quit);
-
-    SystemTray::new().with_menu(tray_menu)
+    Menu::with_items(&[
+        &show,
+        &MenuItem::separator(),
+        &sync_all,
+        &MenuItem::separator(),
+        &quit,
+    ]).unwrap()
 }
 
-fn handle_system_tray_event(app: &AppHandle, event: SystemTrayEvent) {
+fn handle_tray_event(app: &AppHandle, event: TrayIconEvent) {
     match event {
-        SystemTrayEvent::LeftClick {
-            position: _,
-            size: _,
-            ..
-        } => {
-            let window = app.get_window("main").unwrap();
-            window.show().unwrap();
-            window.set_focus().unwrap();
+        TrayIconEvent::Click { button: tauri::tray::MouseButton::Left, .. } => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }
-        SystemTrayEvent::MenuItemClick { id, .. } => {
-            match id.as_str() {
+        TrayIconEvent::MenuItemClick { id, .. } => {
+            match id.as_ref() {
                 "quit" => {
                     std::process::exit(0);
                 }
                 "show" => {
-                    let window = app.get_window("main").unwrap();
-                    window.show().unwrap();
-                    window.set_focus().unwrap();
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                 }
                 "sync_all" => {
                     // Trigger sync all via event
-                    app.emit_all("sync-all-requested", {}).unwrap();
+                    let _ = app.emit("sync-all-requested", ());
                 }
                 _ => {}
             }
@@ -64,8 +61,10 @@ async fn main() {
     let app_state = AppState::new().expect("Failed to initialize app state");
 
     tauri::Builder::default()
-        .system_tray(create_system_tray())
-        .on_system_tray_event(handle_system_tray_event)
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
@@ -87,22 +86,32 @@ async fn main() {
             commands::show_notification,
         ])
         .setup(|app| {
+            // Setup tray icon
+            let tray_menu = create_tray_menu();
+            let _tray = TrayIconBuilder::with_id("main-tray")
+                .menu(&tray_menu)
+                .icon(app.default_window_icon().unwrap().clone())
+                .on_tray_icon_event(move |tray, event| {
+                    handle_tray_event(tray.app_handle(), event);
+                })
+                .build(app)?;
+
             // Setup notifications
             let app_handle = app.handle();
             
             // Register app event listeners
             let _app_handle = app_handle.clone();
-            app.listen_global("sync-all-requested", move |_event| {
+            app.listen("sync-all-requested", move |_event| {
                 // Emit to frontend to trigger sync all
-                _app_handle.emit_all("sync-all-trigger", {}).unwrap();
+                let _ = _app_handle.emit("sync-all-trigger", ());
             });
 
             Ok(())
         })
-        .on_window_event(|event| match event.event() {
+        .on_window_event(|window, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 // Hide window instead of closing when user clicks X
-                event.window().hide().unwrap();
+                let _ = window.hide();
                 api.prevent_close();
             }
             _ => {}

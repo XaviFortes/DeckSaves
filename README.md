@@ -335,6 +335,76 @@ Common issues and solutions:
    - IAM roles (if running on EC2)
 3. Update your configuration file with the bucket name and region (never put credentials in the config file!)
 
+## AWS Credential Encryption
+
+**🔒 DeckSaves implements secure, machine-specific encryption for AWS credentials.**
+
+### How It Works
+
+When you enter AWS credentials through the GUI or CLI, DeckSaves automatically encrypts them using **AES-256-GCM** encryption before storing them in the configuration file. The credentials are never stored in plaintext.
+
+### Encryption Details
+
+**Algorithm**: AES-256-GCM (Galois/Counter Mode)
+- **Key Size**: 256-bit (32 bytes)
+- **Authentication**: Built-in authenticated encryption (prevents tampering)
+- **Nonce**: 96-bit random nonce generated for each encryption operation
+- **Output**: Base64-encoded (nonce + ciphertext)
+
+**Key Derivation**: Machine-specific key derived from:
+- System hostname (`HOSTNAME` or `COMPUTERNAME` environment variable)
+- Username (`USER` or `USERNAME` environment variable)  
+- Static salt: `"decksaves_crypto_v1"`
+- Hash function: SHA-256
+
+```rust
+// Simplified key derivation process
+let key_material = SHA256("decksaves_crypto_v1" + hostname + username)
+let encryption_key = key_material[0..32] // First 32 bytes as AES-256 key
+```
+
+### Security Properties
+
+**✅ Machine-Specific**: Credentials encrypted on one machine cannot be decrypted on another
+**✅ User-Specific**: Different users on the same machine get different encryption keys
+**✅ Authenticated**: Tampering with encrypted credentials is detected and prevents decryption
+**✅ Non-Deterministic**: Same credential encrypted twice produces different ciphertext (due to random nonce)
+**✅ No Hardcoded Keys**: No master keys or secrets embedded in the application
+
+### Example Configuration
+
+In your `config.toml`, encrypted credentials look like this:
+```toml
+s3_bucket = "my-game-saves"
+s3_region = "us-east-1"
+aws_access_key_id = "2FALL2z3/6VT7/mB08PZVc4gHmHE8OHfcw6jTqcMff46pNyL4NL3jPKiCiCqt6lL"
+aws_secret_access_key = "QiU5MuUNK11MqDn9fbZTP1ckqZxVG0Fa+l4atSlq/TCRsuZ3v0jIyYodF2EvjWjijVrW6DzIahak4Xe09mY084F+BTI="
+```
+
+### Important Security Notes
+
+1. **Backup Considerations**: Encrypted credentials are tied to your machine and user account. If you restore the config file to a different machine or user, you'll need to re-enter the credentials.
+
+2. **Migration**: When moving to a new machine, you cannot simply copy the config file - the encrypted credentials won't work. Use the GUI or CLI to re-enter credentials on the new machine.
+
+3. **Not Network Security**: This encryption protects credentials at rest on your local machine. It doesn't encrypt data in transit to AWS (that's handled by HTTPS/TLS).
+
+4. **Environment Variables Still Work**: You can still use AWS environment variables or AWS credential files instead of storing encrypted credentials in the config.
+
+### Implementation
+
+The encryption is handled by the `CredentialCrypto` struct in `core/src/crypto.rs`:
+
+```rust
+// Encrypt credentials when saving
+config.set_aws_access_key("AKIA...")?;  // Automatically encrypts
+config.set_aws_secret_key("secret")?;   // Automatically encrypts
+
+// Decrypt credentials when using
+let access_key = config.get_aws_access_key()?;  // Automatically decrypts
+let secret_key = config.get_aws_secret_key()?;  // Automatically decrypts
+```
+
 ## Development
 
 ### Core Library Features
@@ -413,9 +483,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [x] File logging with rotation
 - [x] Health checks and watchdog support
 - [x] GUI implementation with Tauri
+- [x] Encryption for AWS credentials (AES-256-GCM)
 - [ ] Conflict resolution strategies
 - [ ] Incremental/delta sync for large save files
-- [ ] Encryption for cloud storage
+- [ ] End-to-end encryption for cloud storage (encrypt save files themselves)
 - [ ] Multiple cloud provider support (Google Drive, Dropbox)
 - [ ] Steam Cloud integration
 - [ ] Automatic game detection

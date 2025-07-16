@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Game, GameConfig } from '../types'
 
 interface Props {
@@ -20,11 +21,17 @@ const showAddForm = ref(false)
 const showEditForm = ref(false)
 const editingGame = ref<Game | null>(null)
 const loading = ref(false)
+const syncStatus = ref<Record<string, { status: string; loading: boolean; error?: string }>>({})
 const newGame = ref({
   name: '',
   save_paths: [''],
   sync_enabled: true
 })
+
+let syncStartedUnlisten: UnlistenFn | null = null
+let syncProgressUnlisten: UnlistenFn | null = null
+let syncCompletedUnlisten: UnlistenFn | null = null
+let syncErrorUnlisten: UnlistenFn | null = null
 
 const addPath = () => {
   newGame.value.save_paths.push('')
@@ -170,17 +177,70 @@ const removeGame = async (game: Game) => {
 
 const syncGame = async (game: Game) => {
   try {
-    loading.value = true
-    await invoke('sync_game', { game_name: game.id })
-    // Show success feedback
-    alert(`Sync started for ${game.name}`)
+    // Set loading state
+    syncStatus.value[game.id] = { status: 'Starting sync...', loading: true }
+    
+    await invoke('sync_game_with_feedback', { gameName: game.id })
   } catch (error) {
     console.error('Failed to sync game:', error)
-    alert('Failed to sync game: ' + error)
-  } finally {
-    loading.value = false
+    syncStatus.value[game.id] = { 
+      status: 'Sync failed', 
+      loading: false, 
+      error: error as string 
+    }
+    // Clear error after 5 seconds
+    setTimeout(() => {
+      if (syncStatus.value[game.id]?.error) {
+        delete syncStatus.value[game.id]
+      }
+    }, 5000)
   }
 }
+
+// Setup event listeners for sync feedback
+onMounted(async () => {
+  syncStartedUnlisten = await listen('sync-started', (event: any) => {
+    const { game_name } = event.payload
+    syncStatus.value[game_name] = { status: 'Sync started...', loading: true }
+  })
+
+  syncProgressUnlisten = await listen('sync-progress', (event: any) => {
+    const { game_name, status } = event.payload
+    if (syncStatus.value[game_name]) {
+      syncStatus.value[game_name].status = status
+    }
+  })
+
+  syncCompletedUnlisten = await listen('sync-completed', (event: any) => {
+    const { game_name, result } = event.payload
+    syncStatus.value[game_name] = { status: result, loading: false }
+    // Clear success message after 3 seconds
+    setTimeout(() => {
+      if (syncStatus.value[game_name] && !syncStatus.value[game_name].loading) {
+        delete syncStatus.value[game_name]
+      }
+    }, 3000)
+  })
+
+  syncErrorUnlisten = await listen('sync-error', (event: any) => {
+    const { game_name, error } = event.payload
+    syncStatus.value[game_name] = { status: 'Sync failed', loading: false, error }
+    // Clear error after 5 seconds
+    setTimeout(() => {
+      if (syncStatus.value[game_name]?.error) {
+        delete syncStatus.value[game_name]
+      }
+    }, 5000)
+  })
+})
+
+onUnmounted(() => {
+  // Clean up event listeners
+  if (syncStartedUnlisten) syncStartedUnlisten()
+  if (syncProgressUnlisten) syncProgressUnlisten()
+  if (syncCompletedUnlisten) syncCompletedUnlisten()
+  if (syncErrorUnlisten) syncErrorUnlisten()
+})
 
 const toggleWatching = async (game: Game) => {
   try {
@@ -268,10 +328,24 @@ const toggleWatching = async (game: Game) => {
           <button 
             class="btn btn-primary"
             @click="syncGame(game)"
-            :disabled="loading"
+            :disabled="loading || syncStatus[game.id]?.loading"
           >
-            Sync Now
+            {{ syncStatus[game.id]?.loading ? 'Syncing...' : 'Sync Now' }}
           </button>
+          
+          <!-- Sync Status Display -->
+          <div v-if="syncStatus[game.id]" class="sync-status" :class="{
+            'sync-loading': syncStatus[game.id].loading,
+            'sync-error': syncStatus[game.id].error,
+            'sync-success': !syncStatus[game.id].loading && !syncStatus[game.id].error
+          }">
+            <div class="sync-status-text">
+              {{ syncStatus[game.id].status }}
+            </div>
+            <div v-if="syncStatus[game.id].error" class="sync-error-details">
+              {{ syncStatus[game.id].error }}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -739,5 +813,42 @@ const toggleWatching = async (game: Game) => {
 .btn-secondary:hover:not(:disabled) {
   background-color: var(--bg-secondary);
   color: var(--text-primary);
+}
+
+.sync-status {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--border-radius);
+  font-size: 0.875rem;
+  font-weight: 500;
+  border-left: 3px solid;
+}
+
+.sync-loading {
+  background-color: var(--info-bg);
+  color: var(--info-color);
+  border-left-color: var(--info-color);
+}
+
+.sync-success {
+  background-color: var(--success-bg);
+  color: var(--success-color);
+  border-left-color: var(--success-color);
+}
+
+.sync-error {
+  background-color: var(--danger-bg);
+  color: var(--danger-color);
+  border-left-color: var(--danger-color);
+}
+
+.sync-status-text {
+  font-weight: 600;
+}
+
+.sync-error-details {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  opacity: 0.9;
 }
 </style>

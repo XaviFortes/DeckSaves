@@ -15,10 +15,17 @@ const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
 const loading = ref(false)
+const awsTestResult = ref<string | null>(null)
+const awsTestLoading = ref(false)
 const systemInfo = ref<SystemInfo | null>(null)
 const localConfig = ref<Config>({
   aws_profile: '',
   s3_bucket: '',
+  s3_region: 'us-east-1',
+  aws_access_key_id: '',
+  aws_secret_access_key: '',
+  peer_sync_enabled: false,
+  websocket_url: '',
   local_base_path: '',
   sync_interval_minutes: 15,
   auto_sync: false,
@@ -27,9 +34,29 @@ const localConfig = ref<Config>({
 })
 
 // Watch for config changes and update local copy
-watch(() => props.config, (newConfig) => {
+watch(() => props.config, async (newConfig) => {
   if (newConfig) {
-    localConfig.value = { ...newConfig }
+    // Don't overwrite local changes if we have unsaved credential changes
+    const hasLocalCredentials = localConfig.value.aws_access_key_id || localConfig.value.aws_secret_access_key
+    
+    if (!hasLocalCredentials) {
+      localConfig.value = { ...newConfig }
+      // Load decrypted credentials for display
+      try {
+        const [accessKey, secretKey] = await invoke<[string, string]>('get_aws_credentials')
+        localConfig.value.aws_access_key_id = accessKey
+        localConfig.value.aws_secret_access_key = secretKey
+      } catch (error) {
+        console.warn('Could not load AWS credentials:', error)
+      }
+    } else {
+      // Update everything except credentials
+      const currentCredentials = {
+        aws_access_key_id: localConfig.value.aws_access_key_id,
+        aws_secret_access_key: localConfig.value.aws_secret_access_key
+      }
+      localConfig.value = { ...newConfig, ...currentCredentials }
+    }
   }
 }, { immediate: true })
 
@@ -51,7 +78,29 @@ const selectLocalBasePath = async () => {
 const saveConfig = async () => {
   try {
     loading.value = true
-    await invoke('save_config', { config: localConfig.value })
+    
+    // If AWS credentials are provided, use the secure save method
+    if (localConfig.value.aws_access_key_id && localConfig.value.aws_secret_access_key) {
+      // Create config without plaintext credentials
+      const configToSave = { ...localConfig.value }
+      delete configToSave.aws_access_key_id
+      delete configToSave.aws_secret_access_key
+      
+      // Save credentials and other config in one operation
+      await invoke('set_aws_credentials_and_config', {
+        accessKeyId: localConfig.value.aws_access_key_id,
+        secretAccessKey: localConfig.value.aws_secret_access_key,
+        config: configToSave
+      })
+    } else {
+      // No credentials to save, just save the regular config
+      const configToSave = { ...localConfig.value }
+      delete configToSave.aws_access_key_id
+      delete configToSave.aws_secret_access_key
+      
+      await invoke('save_config', { config: configToSave })
+    }
+    
     emit('config-updated', localConfig.value)
     alert('Configuration saved successfully!')
   } catch (error) {
@@ -90,6 +139,66 @@ const installService = async () => {
   }
 }
 
+const testAwsConnection = async () => {
+  if (!localConfig.value.aws_access_key_id || !localConfig.value.aws_secret_access_key || !localConfig.value.s3_bucket || !localConfig.value.s3_region) {
+    awsTestResult.value = 'Please fill in all AWS credentials and S3 configuration first.'
+    return
+  }
+
+  try {
+    awsTestLoading.value = true
+    awsTestResult.value = null
+    
+    const result = await invoke<string>('test_aws_connection', {
+      accessKeyId: localConfig.value.aws_access_key_id,
+      secretAccessKey: localConfig.value.aws_secret_access_key,
+      region: localConfig.value.s3_region,
+      bucket: localConfig.value.s3_bucket
+    })
+    
+    awsTestResult.value = result
+  } catch (error) {
+    awsTestResult.value = `Connection failed: ${error}`
+    console.error('AWS connection test failed:', error)
+  } finally {
+    awsTestLoading.value = false
+  }
+}
+
+const debugCredentials = async () => {
+  console.log('Debug button clicked - starting debug process')
+  try {
+    console.log('Calling debug_credentials command...')
+    const result = await invoke<string>('debug_credentials')
+    console.log('Debug credentials result:', result)
+    
+    // Parse the JSON to make it more readable
+    try {
+      const parsed = JSON.parse(result)
+      console.log('Parsed debug info:', parsed)
+      alert('Debug info:\n' + JSON.stringify(parsed, null, 2))
+    } catch (parseError) {
+      console.log('Could not parse as JSON, showing raw result')
+      alert('Debug info logged to console: ' + result)
+    }
+  } catch (error) {
+    console.error('Debug credentials failed:', error)
+    alert('Debug failed: ' + String(error))
+  }
+}
+
+const testCommand = async () => {
+  console.log('Test button clicked')
+  try {
+    const result = await invoke<string>('test_command')
+    console.log('Test command result:', result)
+    alert('Test result: ' + result)
+  } catch (error) {
+    console.error('Test command failed:', error)
+    alert('Test failed: ' + String(error))
+  }
+}
+
 // Load system info on mount
 loadSystemInfo()
 </script>
@@ -103,15 +212,48 @@ loadSystemInfo()
       <section class="config-section">
         <h3>AWS Configuration</h3>
         <div class="form-group">
-          <label for="aws-profile">AWS Profile</label>
+          <label for="aws-access-key">AWS Access Key ID</label>
           <input
-            id="aws-profile"
-            v-model="localConfig.aws_profile"
-            type="text"
+            id="aws-access-key"
+            v-model="localConfig.aws_access_key_id"
+            type="password"
             class="form-input"
-            placeholder="default"
+            placeholder="AKIA..."
           />
-          <small class="form-help">AWS profile to use for S3 operations</small>
+          <small class="form-help">Your AWS Access Key ID for S3 operations</small>
+        </div>
+
+        <div class="form-group">
+          <label for="aws-secret-key">AWS Secret Access Key</label>
+          <input
+            id="aws-secret-key"
+            v-model="localConfig.aws_secret_access_key"
+            type="password"
+            class="form-input"
+            placeholder="Secret key..."
+          />
+          <small class="form-help">Your AWS Secret Access Key (stored securely encrypted)</small>
+        </div>
+
+        <div class="form-group">
+          <label for="s3-region">AWS Region</label>
+          <select
+            id="s3-region"
+            v-model="localConfig.s3_region"
+            class="form-input"
+          >
+            <option value="us-east-1">US East (N. Virginia)</option>
+            <option value="us-west-1">US West (N. California)</option>
+            <option value="us-west-2">US West (Oregon)</option>
+            <option value="eu-west-1">Europe (Ireland)</option>
+            <option value="eu-west-2">Europe (London)</option>
+            <option value="eu-west-3">Europe (Paris)</option>
+            <option value="eu-south-2">Europe (Spain)</option>
+            <option value="eu-central-1">Europe (Frankfurt)</option>
+            <option value="ap-southeast-1">Asia Pacific (Singapore)</option>
+            <option value="ap-northeast-1">Asia Pacific (Tokyo)</option>
+          </select>
+          <small class="form-help">AWS region where your S3 bucket is located</small>
         </div>
         
         <div class="form-group">
@@ -125,6 +267,53 @@ loadSystemInfo()
             required
           />
           <small class="form-help">S3 bucket name for storing game saves</small>
+        </div>
+
+        <div class="form-group">
+          <div class="button-group">
+            <button 
+              type="button"
+              class="btn btn-secondary"
+              @click="testAwsConnection"
+              :disabled="awsTestLoading || !localConfig.aws_access_key_id || !localConfig.aws_secret_access_key || !localConfig.s3_bucket"
+            >
+              {{ awsTestLoading ? 'Testing...' : 'Test Connection' }}
+            </button>
+            <button 
+              type="button"
+              class="btn btn-tertiary"
+              @click="debugCredentials"
+              title="Debug credential storage (check console)"
+            >
+              Debug
+            </button>
+            <button 
+              type="button"
+              class="btn btn-secondary"
+              @click="testCommand"
+              title="Test basic command system"
+            >
+              Test Command
+            </button>
+          </div>
+          <div v-if="awsTestResult" class="test-result" :class="{ 
+            'test-success': awsTestResult.includes('successful'),
+            'test-error': !awsTestResult.includes('successful')
+          }">
+            {{ awsTestResult }}
+          </div>
+        </div>
+        
+        <div class="form-group">
+          <label for="aws-profile">AWS Profile (Optional)</label>
+          <input
+            id="aws-profile"
+            v-model="localConfig.aws_profile"
+            type="text"
+            class="form-input"
+            placeholder="default"
+          />
+          <small class="form-help">AWS profile to use as fallback (leave empty to use credentials above)</small>
         </div>
       </section>
 
@@ -239,6 +428,23 @@ loadSystemInfo()
       >
         {{ loading ? 'Saving...' : 'Save Configuration' }}
       </button>
+    </div>
+
+    <!-- AWS Connection Test -->
+    <div class="aws-connection-test">
+      <h3>AWS Connection Test</h3>
+      <div class="form-group">
+        <button 
+          class="btn"
+          @click="testAwsConnection"
+          :disabled="awsTestLoading"
+        >
+          {{ awsTestLoading ? 'Testing...' : 'Test AWS Connection' }}
+        </button>
+      </div>
+      <div v-if="awsTestResult" class="test-result">
+        <small class="form-help">{{ awsTestResult }}</small>
+      </div>
     </div>
   </div>
 </template>
@@ -423,5 +629,61 @@ loadSystemInfo()
 .btn-primary:hover:not(:disabled) {
   background-color: var(--primary-hover);
   border-color: var(--primary-hover);
+}
+
+.btn-secondary {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  background-color: var(--bg-quaternary);
+  border-color: var(--border-hover);
+}
+
+.button-group {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.btn-tertiary {
+  background-color: var(--bg-tertiary);
+  color: var(--text-secondary);
+  border-color: var(--border-color);
+  font-size: 0.75rem;
+  padding: 0.5rem 1rem;
+}
+
+.btn-tertiary:hover:not(:disabled) {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.aws-connection-test {
+  margin-top: 2rem;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.test-result {
+  margin-top: 0.5rem;
+  padding: 0.75rem;
+  border-radius: var(--border-radius);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.test-success {
+  background-color: var(--success-bg);
+  color: var(--success-color);
+  border: 1px solid var(--success-border);
+}
+
+.test-error {
+  background-color: var(--danger-bg);
+  color: var(--danger-color);
+  border: 1px solid var(--danger-border);
 }
 </style>

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use uuid::Uuid;
-use tracing::{info, error};
+use tracing::{info, error, debug};
 
 // Application state
 pub struct AppState {
@@ -43,6 +43,64 @@ pub async fn get_config(state: State<'_, AppState>) -> Result<SyncConfig, String
 pub async fn save_config(config: SyncConfig, state: State<'_, AppState>) -> Result<String, String> {
     state.config_manager.save_config(&config).await.map_err(|e| e.to_string())?;
     Ok("Configuration saved successfully".to_string())
+}
+
+#[command]
+pub async fn set_aws_credentials(
+    access_key_id: String,
+    secret_access_key: String,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    println!("DEBUG: set_aws_credentials called with access_key_id length: {}, secret_access_key length: {}", 
+             access_key_id.len(), secret_access_key.len());
+    
+    let mut config = state.config_manager.load_config().await.map_err(|e| {
+        println!("DEBUG: Failed to load config in set_aws_credentials: {}", e);
+        e.to_string()
+    })?;
+    
+    println!("DEBUG: Config loaded, setting credentials...");
+    
+    // Use the encryption methods
+    config.set_aws_access_key(&access_key_id).map_err(|e| {
+        println!("DEBUG: Failed to set access key: {}", e);
+        e.to_string()
+    })?;
+    config.set_aws_secret_key(&secret_access_key).map_err(|e| {
+        println!("DEBUG: Failed to set secret key: {}", e);
+        e.to_string()
+    })?;
+    
+    println!("DEBUG: Credentials set, saving config...");
+    
+    // Debug what's actually in the config before saving
+    println!("DEBUG: Before save - aws_access_key_id is_some: {}, aws_secret_access_key is_some: {}", 
+             config.aws_access_key_id.is_some(), 
+             config.aws_secret_access_key.is_some());
+    if let Some(ref access_key) = config.aws_access_key_id {
+        println!("DEBUG: Access key length: {}", access_key.len());
+    }
+    if let Some(ref secret_key) = config.aws_secret_access_key {
+        println!("DEBUG: Secret key length: {}", secret_key.len());
+    }
+    
+    state.config_manager.save_config(&config).await.map_err(|e| {
+        println!("DEBUG: Failed to save config: {}", e);
+        e.to_string()
+    })?;
+    
+    println!("DEBUG: Config saved successfully");
+    Ok("AWS credentials saved securely".to_string())
+}
+
+#[command]
+pub async fn get_aws_credentials(state: State<'_, AppState>) -> Result<(String, String), String> {
+    let config = state.config_manager.load_config().await.map_err(|e| e.to_string())?;
+    
+    let access_key = config.get_aws_access_key().map_err(|e| e.to_string())?.unwrap_or_default();
+    let secret_key = config.get_aws_secret_key().map_err(|e| e.to_string())?.unwrap_or_default();
+    
+    Ok((access_key, secret_key))
 }
 
 #[command]
@@ -265,4 +323,296 @@ pub async fn show_notification(title: String, body: String, app_handle: AppHandl
     })).map_err(|e| e.to_string())?;
     
     Ok(())
+}
+
+// AWS connection testing commands
+#[command]
+pub async fn test_aws_connection(
+    access_key_id: String, 
+    secret_access_key: String, 
+    region: String, 
+    bucket: String
+) -> Result<String, String> {
+    use aws_sdk_s3::{Client, config::Region};
+    use aws_config::BehaviorVersion;
+    use aws_credential_types::Credentials;
+    
+    // Create credentials from provided keys
+    let credentials = Credentials::new(
+        access_key_id,
+        secret_access_key,
+        None,
+        None,
+        "manual"
+    );
+    
+    // Create config with custom credentials
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new(region))
+        .credentials_provider(credentials)
+        .load()
+        .await;
+    
+    let client = Client::new(&config);
+    
+    // Test connection by trying to list objects (with limit)
+    match client.list_objects_v2()
+        .bucket(&bucket)
+        .max_keys(1)
+        .send()
+        .await 
+    {
+        Ok(_) => Ok("Connection successful! AWS credentials and S3 bucket are working.".to_string()),
+        Err(e) => {
+            let error_msg = if e.to_string().contains("NoSuchBucket") {
+                format!("Bucket '{}' does not exist or is not accessible", bucket)
+            } else if e.to_string().contains("InvalidAccessKeyId") {
+                "Invalid AWS Access Key ID".to_string()
+            } else if e.to_string().contains("SignatureDoesNotMatch") {
+                "Invalid AWS Secret Access Key".to_string()
+            } else if e.to_string().contains("AccessDenied") {
+                "Access denied. Check your AWS permissions for this bucket".to_string()
+            } else {
+                format!("Connection failed: {}", e.to_string())
+            };
+            Err(error_msg)
+        }
+    }
+}
+
+#[command]
+pub async fn sync_game_with_feedback(
+    game_name: String, 
+    state: State<'_, AppState>,
+    app_handle: AppHandle
+) -> Result<String, String> {
+    info!("Starting sync for game: {}", game_name);
+    
+    // Emit sync started event
+    let _ = app_handle.emit("sync-started", serde_json::json!({
+        "game_name": game_name,
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }));
+    
+    // Load current config
+    let config = match state.config_manager.load_config().await {
+        Ok(config) => config,
+        Err(e) => {
+            let error_msg = format!("Failed to load configuration: {}", e);
+            let _ = app_handle.emit("sync-error", serde_json::json!({
+                "game_name": game_name,
+                "error": error_msg,
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            }));
+            return Err(error_msg);
+        }
+    };
+    
+    // Check if game exists
+    let game_config = match config.games.get(&game_name) {
+        Some(game) => game,
+        None => {
+            let error_msg = format!("Game '{}' not found", game_name);
+            let _ = app_handle.emit("sync-error", serde_json::json!({
+                "game_name": game_name,
+                "error": error_msg,
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            }));
+            return Err(error_msg);
+        }
+    };
+    
+    // Check if sync is enabled for this game
+    if !game_config.sync_enabled {
+        let error_msg = format!("Sync is disabled for game '{}'", game_name);
+        let _ = app_handle.emit("sync-error", serde_json::json!({
+            "game_name": game_name,
+            "error": error_msg,
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        }));
+        return Err(error_msg);
+    }
+    
+    // Check AWS configuration
+    let has_credentials = match (config.get_aws_access_key(), config.get_aws_secret_key()) {
+        (Ok(Some(access_key)), Ok(Some(secret_key))) => {
+            debug!("Found encrypted credentials: access_key={}, secret_key={}", 
+                   if access_key.is_empty() { "empty" } else { "present" },
+                   if secret_key.is_empty() { "empty" } else { "present" });
+            !access_key.is_empty() && !secret_key.is_empty()
+        },
+        (access_result, secret_result) => {
+            debug!("Failed to get credentials: access_key={:?}, secret_key={:?}", 
+                   access_result, secret_result);
+            false
+        }
+    };
+    
+    debug!("AWS config check: s3_bucket={:?}, has_credentials={}", config.s3_bucket, has_credentials);
+    
+    if config.s3_bucket.is_none() || !has_credentials {
+        let error_msg = "AWS configuration incomplete. Please set S3 bucket and AWS credentials in settings.".to_string();
+        let _ = app_handle.emit("sync-error", serde_json::json!({
+            "game_name": game_name,
+            "error": error_msg,
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        }));
+        return Err(error_msg);
+    }
+    
+    // Emit sync progress
+    let _ = app_handle.emit("sync-progress", serde_json::json!({
+        "game_name": game_name,
+        "status": "Connecting to AWS S3...",
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }));
+    
+    // Perform the actual sync using existing core functionality
+    match GameSaveSync::new(config.clone()).await {
+        Ok(sync_handler) => {
+            match sync_handler.sync_game(&game_name).await {
+                Ok(_) => {
+                    let result = "Sync completed successfully".to_string();
+                    // Emit sync completed event
+                    let _ = app_handle.emit("sync-completed", serde_json::json!({
+                        "game_name": game_name,
+                        "result": result,
+                        "timestamp": std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs()
+                    }));
+                    Ok(result)
+                }
+                Err(e) => {
+                    let error_msg = format!("Sync failed: {}", e);
+                    let _ = app_handle.emit("sync-error", serde_json::json!({
+                        "game_name": game_name,
+                        "error": error_msg,
+                        "timestamp": std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs()
+                    }));
+                    Err(error_msg)
+                }
+            }
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to initialize sync handler: {}", e);
+            let _ = app_handle.emit("sync-error", serde_json::json!({
+                "game_name": game_name,
+                "error": error_msg,
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            }));
+            Err(error_msg)
+        }
+    }
+}
+
+#[command]
+pub async fn debug_credentials(state: State<'_, AppState>) -> Result<String, String> {
+    println!("DEBUG: debug_credentials command called");
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        println!("DEBUG: Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    println!("DEBUG: Config loaded successfully");
+    
+    let access_key_result = config.get_aws_access_key();
+    let secret_key_result = config.get_aws_secret_key();
+    
+    println!("DEBUG: Credential results - access_key: {:?}, secret_key: {:?}", 
+             access_key_result.as_ref().map(|r| r.is_some()),
+             secret_key_result.as_ref().map(|r| r.is_some()));
+    
+    let debug_info = serde_json::json!({
+        "s3_bucket": config.s3_bucket,
+        "s3_region": config.s3_region,
+        "access_key_stored": config.aws_access_key_id.is_some(),
+        "secret_key_stored": config.aws_secret_access_key.is_some(),
+        "access_key_decrypted": access_key_result.as_ref().map(|opt| opt.is_some()).unwrap_or(false),
+        "secret_key_decrypted": secret_key_result.as_ref().map(|opt| opt.is_some()).unwrap_or(false),
+        "access_key_error": access_key_result.as_ref().err().map(|e| e.to_string()),
+        "secret_key_error": secret_key_result.as_ref().err().map(|e| e.to_string()),
+    });
+    
+    let result = debug_info.to_string();
+    println!("DEBUG: Returning debug info: {}", result);
+    Ok(result)
+}
+
+#[command]
+pub async fn test_command() -> Result<String, String> {
+    println!("TEST: test_command called successfully!");
+    Ok("Test command works!".to_string())
+}
+
+#[command]
+pub async fn set_aws_credentials_and_config(
+    access_key_id: String,
+    secret_access_key: String,
+    config: SyncConfig,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    println!("DEBUG: set_aws_credentials_and_config called with access_key_id length: {}, secret_access_key length: {}", 
+             access_key_id.len(), secret_access_key.len());
+    
+    let mut final_config = config;
+    
+    println!("DEBUG: Setting credentials in config...");
+    
+    // Use the encryption methods
+    final_config.set_aws_access_key(&access_key_id).map_err(|e| {
+        println!("DEBUG: Failed to set access key: {}", e);
+        e.to_string()
+    })?;
+    final_config.set_aws_secret_key(&secret_access_key).map_err(|e| {
+        println!("DEBUG: Failed to set secret key: {}", e);
+        e.to_string()
+    })?;
+    
+    println!("DEBUG: Credentials set in config, saving...");
+    
+    // Debug what's actually in the config before saving
+    println!("DEBUG: Before save - aws_access_key_id is_some: {}, aws_secret_access_key is_some: {}", 
+             final_config.aws_access_key_id.is_some(), 
+             final_config.aws_secret_access_key.is_some());
+    if let Some(ref access_key) = final_config.aws_access_key_id {
+        println!("DEBUG: Access key length: {}", access_key.len());
+    }
+    if let Some(ref secret_key) = final_config.aws_secret_access_key {
+        println!("DEBUG: Secret key length: {}", secret_key.len());
+    }
+    
+    state.config_manager.save_config(&final_config).await.map_err(|e| {
+        println!("DEBUG: Failed to save config: {}", e);
+        e.to_string()
+    })?;
+    
+    println!("DEBUG: Config saved successfully");
+    Ok("Configuration and AWS credentials saved securely".to_string())
 }

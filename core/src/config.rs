@@ -20,7 +20,10 @@ impl ConfigManager {
     }
 
     pub async fn load_config(&self) -> Result<SyncConfig> {
+        println!("DEBUG CONFIG: Loading config from {:?}", self.config_path);
+        
         if !self.config_path.exists() {
+            println!("DEBUG CONFIG: Config file doesn't exist, creating default");
             let default_config = SyncConfig::default();
             self.save_config(&default_config).await?;
             return Ok(default_config);
@@ -29,13 +32,25 @@ impl ConfigManager {
         let content = fs::read_to_string(&self.config_path).await
             .context("Failed to read config file")?;
         
+        println!("DEBUG CONFIG: Config file content length: {} chars", content.len());
+        println!("DEBUG CONFIG: Config file content:\n{}", content);
+        
         let config: SyncConfig = toml::from_str(&content)
             .context("Failed to parse config file")?;
+        
+        println!("DEBUG CONFIG: Parsed config - aws_access_key_id present: {}, aws_secret_access_key present: {}", 
+                config.aws_access_key_id.is_some(), 
+                config.aws_secret_access_key.is_some());
         
         Ok(config)
     }
 
     pub async fn save_config(&self, config: &SyncConfig) -> Result<()> {
+        println!("DEBUG CONFIG: Saving config to {:?}", self.config_path);
+        println!("DEBUG CONFIG: Config before save - aws_access_key_id present: {}, aws_secret_access_key present: {}", 
+                config.aws_access_key_id.is_some(), 
+                config.aws_secret_access_key.is_some());
+        
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent).await
                 .context("Failed to create config directory")?;
@@ -44,9 +59,13 @@ impl ConfigManager {
         let content = toml::to_string_pretty(config)
             .context("Failed to serialize config")?;
         
+        println!("DEBUG CONFIG: Serialized content length: {} chars", content.len());
+        println!("DEBUG CONFIG: Serialized content:\n{}", content);
+        
         fs::write(&self.config_path, content).await
             .context("Failed to write config file")?;
         
+        println!("DEBUG CONFIG: Config saved successfully");
         Ok(())
     }
 

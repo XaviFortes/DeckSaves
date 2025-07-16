@@ -1,0 +1,147 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    # Run weekly security audits
+    - cron: '0 0 * * 1'
+
+jobs:
+  rust-quality:
+    name: Rust Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy (Core)
+        run: |
+          cd core
+          cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run Clippy (CLI)
+        run: |
+          cd cli
+          cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run Clippy (Tauri)
+        run: |
+          cd tauri-ui
+          cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Check for outdated dependencies
+        run: |
+          cargo install cargo-outdated
+          cargo outdated --exit-code 1 || echo "Some dependencies are outdated"
+
+  frontend-quality:
+    name: Frontend Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check formatting (Prettier)
+        run: npx prettier --check . || echo "Some files need formatting"
+
+      - name: Run ESLint
+        run: npx eslint . --ext .js,.ts,.vue || echo "ESLint found issues"
+
+      - name: Type check
+        run: npx vue-tsc --noEmit || echo "TypeScript errors found"
+
+      - name: Check for outdated dependencies
+        run: npm outdated || echo "Some npm dependencies are outdated"
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Rust security audit
+        run: cargo audit
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Node.js security audit
+        run: npm audit --audit-level=moderate
+
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v3
+        with:
+          fail-on-severity: moderate
+
+  codecov:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Generate code coverage (Core)
+        run: |
+          cd core
+          cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml
+
+      - name: Generate code coverage (CLI)
+        run: |
+          cd cli
+          cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./core/cobertura.xml,./cli/cobertura.xml
+          fail_ci_if_error: false

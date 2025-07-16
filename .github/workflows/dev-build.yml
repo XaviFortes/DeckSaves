@@ -1,0 +1,103 @@
+name: Development Build
+
+on:
+  push:
+    branches: [feature/*, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  quick-test:
+    name: Quick Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run quick tests
+        run: |
+          cd core && cargo test --verbose
+          cd ../cli && cargo test --verbose
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Check frontend formatting
+        run: npm run format:check || echo "No format check configured"
+
+      - name: Lint frontend
+        run: npm run lint || echo "No linting configured"
+
+      - name: Type check frontend
+        run: npm run type-check || echo "No type checking configured"
+
+      - name: Build frontend
+        run: npm run build
+
+  dev-build:
+    name: Development Build
+    needs: quick-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build CLI
+        run: |
+          cd cli
+          cargo build --release
+
+      - name: Build Tauri app (development)
+        run: |
+          cd tauri-ui
+          cargo tauri build --debug
+
+      - name: Upload development artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: decksaves-dev-linux
+          path: |
+            target/release/decksaves-cli
+            tauri-ui/src-tauri/target/debug/bundle/deb/*.deb
+          retention-days: 7

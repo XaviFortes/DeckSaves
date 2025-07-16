@@ -7,7 +7,6 @@ on:
   pull_request:
     branches: [main, develop]
   workflow_dispatch:
-
 jobs:
   test:
     name: Test Suite
@@ -55,7 +54,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
+          - platform: 'self-hosted macOS ARM64'
             args: '--target aarch64-apple-darwin'
             target: 'aarch64-apple-darwin'
           - platform: 'macos-latest'
@@ -64,12 +63,12 @@ jobs:
           - platform: 'ubuntu-22.04'
             args: ''
             target: 'x86_64-unknown-linux-gnu'
-          - platform: 'windows-latest'
+          - platform: 'self-hosted Windows X64'
             args: '--target x86_64-pc-windows-msvc'
             target: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
-    continue-on-error: ${{ matrix.platform == 'windows-latest' }}
+    continue-on-error: ${{ contains(matrix.platform, 'Windows') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -111,13 +110,13 @@ jobs:
         run: npm run build
 
       - name: Build CLI (Unix)
-        if: matrix.platform != 'windows-latest'
+        if: ${{ !contains(matrix.platform, 'Windows') }}
         run: |
           cd cli
           cargo build --release --target ${{ matrix.target }}
 
       - name: Build CLI (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: ${{ contains(matrix.platform, 'Windows') }}
         run: |
           cd cli
           cargo build --release --target ${{ matrix.target }}
@@ -130,15 +129,25 @@ jobs:
           projectPath: './tauri-ui'
           args: '--verbose ${{ matrix.args }}'
 
-      - name: Debug - List build output
+      - name: Debug - List build output (Unix)
+        if: ${{ !contains(matrix.platform, 'Windows') }}
         run: |
           echo "Contents of target/release/bundle:"
           find target -name "*.dmg" -o -name "*.app" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" 2>/dev/null || echo "No bundle files found"
           echo "Contents of target:"
           find target -name "game-sync*" 2>/dev/null || echo "No CLI files found"
 
+      - name: Debug - List build output (Windows)
+        if: ${{ contains(matrix.platform, 'Windows') }}
+        run: |
+          echo "Contents of target directory:"
+          Get-ChildItem -Path target -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
+          echo "Looking for specific files:"
+          if (Test-Path "target\release\game-sync.exe") { echo "Found: target\release\game-sync.exe" } else { echo "Not found: target\release\game-sync.exe" }
+          if (Test-Path "target\x86_64-pc-windows-msvc\release\game-sync.exe") { echo "Found: target\x86_64-pc-windows-msvc\release\game-sync.exe" } else { echo "Not found: target\x86_64-pc-windows-msvc\release\game-sync.exe" }
+
       - name: Upload CLI artifacts (Unix)
-        if: matrix.platform != 'windows-latest'
+        if: ${{ !contains(matrix.platform, 'Windows') }}
         uses: actions/upload-artifact@v4
         with:
           name: game-sync-cli-${{ matrix.target }}
@@ -148,7 +157,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload CLI artifacts (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: ${{ contains(matrix.platform, 'Windows') }}
         uses: actions/upload-artifact@v4
         with:
           name: game-sync-cli-${{ matrix.target }}
@@ -158,7 +167,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Tauri artifacts (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: ${{ contains(matrix.platform, 'macOS') || matrix.platform == 'macos-latest' }}
         uses: actions/upload-artifact@v4
         with:
           name: decksaves-macos-${{ matrix.target }}
@@ -180,7 +189,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Tauri artifacts (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: ${{ contains(matrix.platform, 'Windows') }}
         uses: actions/upload-artifact@v4
         with:
           name: decksaves-windows-${{ matrix.target }}

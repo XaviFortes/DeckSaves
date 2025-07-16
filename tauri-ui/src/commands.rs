@@ -285,6 +285,7 @@ pub async fn install_service(user_service: bool) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
         // Windows service installation would go here
+        let _ = user_service; // Acknowledge the parameter until implementation is added
         Ok("Windows service installation not yet implemented".to_string())
     }
     

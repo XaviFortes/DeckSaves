@@ -1,4 +1,7 @@
-use anyhow::{Result, Context};
+use anyhow::Result;
+#[cfg(not(target_os = "windows"))]
+use anyhow::Context;
+#[cfg(not(target_os = "windows"))]
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -382,8 +385,7 @@ pub mod windows {
         service_control_handler::{self, ServiceControlHandlerResult},
         service_dispatcher,
     };
-    use std::sync::mpsc;
-    use std::thread;
+    use tokio::sync::mpsc;
 
     const SERVICE_NAME: &str = "DeckSaves";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -401,18 +403,14 @@ pub mod windows {
             })
         }
 
-        pub async fn run(&mut self) -> Result<()> {
+        pub async fn run(mut self) -> Result<()> {
             tokio::select! {
                 result = self.daemon.run() => result,
-                _ = self.wait_for_shutdown() => {
+                _ = self.shutdown_rx.recv() => {
                     info!("Windows service shutdown requested");
                     Ok(())
                 }
             }
-        }
-
-        async fn wait_for_shutdown(&self) {
-            let _ = self.shutdown_rx.recv();
         }
     }
 
@@ -425,7 +423,7 @@ pub mod windows {
     }
 
     fn run_service(_arguments: Vec<std::ffi::OsString>) -> Result<()> {
-        let (shutdown_tx, shutdown_rx) = mpsc::channel();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
 
         let event_handler = move |control_event| -> ServiceControlHandlerResult {
             match control_event {
@@ -453,7 +451,7 @@ pub mod windows {
 
         // Create and run the service
         let rt = tokio::runtime::Runtime::new()?;
-        let mut service = WindowsService::new(shutdown_rx)?;
+        let service = WindowsService::new(shutdown_rx)?;
         
         let result = rt.block_on(service.run());
 

@@ -3,17 +3,21 @@ name = "tauri-ui"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-name = "tauri_ui"
-crate-type = ["cdylib"]
+# Change to a binary crate to enable running as an app
+[[bin]]
+name = "decksaves-gui"
+path = "src/main.rs"
 
 [dependencies]
-core = { path = "../core" }
-tauri = { version = "1.0", features = [ "api-all" ] }
+decksaves_core = { path = "../core", package = "core" }
+tauri = { version = "1.0", features = ["dialog-open", "dialog-save", "fs-create-dir", "fs-exists", "fs-read-dir", "fs-read-file", "fs-write-file", "notification-all", "path-all", "shell-open", "system-tray"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.0", features = ["v4"] }
 
 [build-dependencies]
 tauri-build = { version = "1.0", features = [] }

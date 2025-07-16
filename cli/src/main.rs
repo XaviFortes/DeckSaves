@@ -554,7 +554,7 @@ async fn show_service_status(_user: bool) -> Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::process::Command;
-        let cmd = if user {
+        let cmd = if _user {
             Command::new("systemctl")
                 .args(&["--user", "status", "decksaves.service"])
                 .output()

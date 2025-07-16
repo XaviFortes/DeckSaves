@@ -142,7 +142,7 @@ jobs:
         if: matrix.platform == 'windows-latest'
         run: |
           echo "Contents of target directory:"
-          dir target /s /b
+          Get-ChildItem -Path target -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
           echo "Looking for specific files:"
           if (Test-Path "target\release\game-sync.exe") { echo "Found: target\release\game-sync.exe" } else { echo "Not found: target\release\game-sync.exe" }
           if (Test-Path "target\x86_64-pc-windows-msvc\release\game-sync.exe") { echo "Found: target\x86_64-pc-windows-msvc\release\game-sync.exe" } else { echo "Not found: target\x86_64-pc-windows-msvc\release\game-sync.exe" }

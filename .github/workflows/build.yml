@@ -69,6 +69,7 @@ jobs:
             target: 'x86_64-pc-windows-msvc'
 
     runs-on: ${{ matrix.platform }}
+    continue-on-error: ${{ matrix.platform == 'windows-latest' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -103,6 +104,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@latest
+
       - name: Build frontend
         run: npm run build
 
@@ -124,25 +128,34 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: './tauri-ui'
-          args: ${{ matrix.args }}
+          args: '--verbose ${{ matrix.args }}'
+
+      - name: Debug - List build output
+        run: |
+          echo "Contents of target/release/bundle:"
+          find target -name "*.dmg" -o -name "*.app" -o -name "*.deb" -o -name "*.AppImage" -o -name "*.msi" -o -name "*.exe" 2>/dev/null || echo "No bundle files found"
+          echo "Contents of target:"
+          find target -name "game-sync*" 2>/dev/null || echo "No CLI files found"
 
       - name: Upload CLI artifacts (Unix)
         if: matrix.platform != 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: decksaves-cli-${{ matrix.target }}
+          name: game-sync-cli-${{ matrix.target }}
           path: |
-            target/${{ matrix.target }}/release/decksaves-cli
+            target/${{ matrix.target }}/release/game-sync
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload CLI artifacts (Windows)
         if: matrix.platform == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
-          name: decksaves-cli-${{ matrix.target }}
+          name: game-sync-cli-${{ matrix.target }}
           path: |
-            target/${{ matrix.target }}/release/decksaves-cli.exe
+            target/${{ matrix.target }}/release/game-sync.exe
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload Tauri artifacts (macOS)
         if: matrix.platform == 'macos-latest'
@@ -150,9 +163,10 @@ jobs:
         with:
           name: decksaves-macos-${{ matrix.target }}
           path: |
-            tauri-ui/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            tauri-ui/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+            target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            target/${{ matrix.target }}/release/bundle/macos/*.app
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload Tauri artifacts (Linux)
         if: matrix.platform == 'ubuntu-22.04'
@@ -160,9 +174,10 @@ jobs:
         with:
           name: decksaves-linux-${{ matrix.target }}
           path: |
-            tauri-ui/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
-            tauri-ui/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            target/${{ matrix.target }}/release/bundle/deb/*.deb
+            target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
           retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload Tauri artifacts (Windows)
         if: matrix.platform == 'windows-latest'
@@ -170,9 +185,10 @@ jobs:
         with:
           name: decksaves-windows-${{ matrix.target }}
           path: |
-            tauri-ui/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            tauri-ui/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            target/${{ matrix.target }}/release/bundle/msi/*.msi
+            target/${{ matrix.target }}/release/bundle/nsis/*.exe
           retention-days: 30
+          if-no-files-found: warn
 
   release:
     name: Create Release

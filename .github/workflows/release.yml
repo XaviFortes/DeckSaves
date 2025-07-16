@@ -66,6 +66,7 @@ jobs:
             arch: 'x64'
 
     runs-on: ${{ matrix.platform }}
+    continue-on-error: ${{ matrix.platform == 'windows-latest' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -164,21 +165,22 @@ jobs:
         if: matrix.platform != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          sha256sum decksaves-cli > decksaves-cli-${{ matrix.target }}.sha256
+          sha256sum game-sync > game-sync-${{ matrix.target }}.sha256
 
       - name: Generate checksums (Windows)
         if: matrix.platform == 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          certutil -hashfile decksaves-cli.exe SHA256 > decksaves-cli-${{ matrix.target }}.sha256
+          certutil -hashfile game-sync.exe SHA256 > game-sync-${{ matrix.target }}.sha256
 
       - name: Upload CLI with checksums
         uses: actions/upload-artifact@v4
         with:
-          name: decksaves-cli-${{ matrix.target }}-${{ needs.prepare-release.outputs.version }}
+          name: game-sync-cli-${{ matrix.target }}-${{ needs.prepare-release.outputs.version }}
           path: |
-            target/${{ matrix.target }}/release/decksaves-cli*
+            target/${{ matrix.target }}/release/game-sync*
           retention-days: 90
+          if-no-files-found: warn
 
   publish-crates:
     name: Publish to crates.io

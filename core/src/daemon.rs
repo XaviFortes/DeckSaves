@@ -3,9 +3,14 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{info, error, warn, debug};
+
+#[cfg(unix)]
 use signal_hook::consts::SIGTERM;
+#[cfg(unix)]
 use signal_hook_tokio::Signals;
+#[cfg(unix)]
 use futures_util::stream::StreamExt;
+
 use crate::{config::ConfigManager, GameSaveSync, watcher::WatcherManager};
 
 pub struct DaemonService {
@@ -29,8 +34,10 @@ impl DaemonService {
     pub async fn run(&mut self) -> Result<()> {
         info!("Starting DeckSaves daemon service");
 
-        // Set up signal handling
+        // Set up signal handling (Unix only)
+        #[cfg(unix)]
         let signals = Signals::new(&[SIGTERM])?;
+        #[cfg(unix)]
         let mut signals = signals.fuse();
 
         // Notify systemd that we're ready (Linux only)
@@ -41,6 +48,21 @@ impl DaemonService {
         self.start_all_watchers().await?;
 
         // Main service loop
+        #[cfg(unix)]
+        self.run_unix_service_loop(&mut signals).await?;
+        
+        #[cfg(windows)]
+        self.run_windows_service_loop().await?;
+
+        // Cleanup
+        self.shutdown().await?;
+        info!("DeckSaves daemon service stopped");
+        
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    async fn run_unix_service_loop(&mut self, signals: &mut futures_util::stream::Fuse<Signals>) -> Result<()> {
         loop {
             tokio::select! {
                 // Handle shutdown signals
@@ -76,11 +98,32 @@ impl DaemonService {
                 break;
             }
         }
+        Ok(())
+    }
 
-        // Cleanup
-        self.shutdown().await?;
-        info!("DeckSaves daemon service stopped");
-        
+    #[cfg(windows)]
+    async fn run_windows_service_loop(&mut self) -> Result<()> {
+        // On Windows, we use a different approach - just run until manually stopped
+        // Windows services typically use the service control manager for shutdown signals
+        loop {
+            tokio::select! {
+                // Periodic health check
+                _ = sleep(Duration::from_secs(30)) => {
+                    self.health_check().await?;
+                }
+                
+                // Check for configuration changes
+                _ = sleep(Duration::from_secs(60)) => {
+                    if let Err(e) = self.reload_configuration().await {
+                        error!("Failed to reload configuration: {}", e);
+                    }
+                }
+            }
+
+            if self.should_stop {
+                break;
+            }
+        }
         Ok(())
     }
 
@@ -188,6 +231,11 @@ impl DaemonService {
         }
         
         Ok(())
+    }
+
+    pub fn stop(&mut self) {
+        info!("Daemon stop requested");
+        self.should_stop = true;
     }
 }
 

@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 notify = "5.1"
-tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync", "signal"] }
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
 aws-sdk-s3 = "1.0"
 aws-config = "1.0"
 aws-credential-types = "1.0"
@@ -22,10 +22,13 @@ toml = "0.8"
 aes-gcm = "0.10"
 base64 = "0.21"
 rand = "0.8"
-signal-hook = "0.3"
-signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
 
 # Platform-specific dependencies
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+signal-hook-tokio = { version = "0.3", features = ["futures-v0_3"] }
+tokio = { version = "1", features = ["signal"] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 libsystemd = "0.7"
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import type { Game, GameConfig } from '../types'
@@ -21,12 +21,81 @@ const showAddForm = ref(false)
 const showEditForm = ref(false)
 const editingGame = ref<Game | null>(null)
 const loading = ref(false)
-const syncStatus = ref<Record<string, { status: string; loading: boolean; error?: string }>>({})
+const syncStatus = ref<Record<string, { status: string; loading: boolean; error?: string; timestamp?: number }>>({})
 const newGame = ref({
   name: '',
   save_paths: [''],
   sync_enabled: true
 })
+
+// Persistence helpers
+const SYNC_STATUS_KEY = 'decksaves_sync_status'
+
+const loadPersistedSyncStatus = () => {
+  try {
+    const stored = localStorage.getItem(SYNC_STATUS_KEY)
+    if (stored) {
+      const parsed = JSON.parse(stored)
+      // Only restore recent statuses (within last 10 minutes)
+      const tenMinutesAgo = Date.now() - (10 * 60 * 1000)
+      Object.keys(parsed).forEach(gameId => {
+        const status = parsed[gameId]
+        if (status.timestamp && status.timestamp > tenMinutesAgo) {
+          // Skip loading states that indicate ongoing operations from previous session
+          if (status.loading && (
+            status.status === 'Starting sync...' || 
+            status.status === 'Sync started...' ||
+            status.status.includes('Syncing') ||
+            status.status.includes('Connecting')
+          )) {
+            console.log(`Clearing stale sync state for ${gameId}:`, status.status)
+            return // Don't restore this state
+          }
+          syncStatus.value[gameId] = status
+        }
+      })
+      console.log('Loaded persisted sync status:', syncStatus.value)
+    }
+  } catch (e) {
+    console.warn('Failed to load persisted sync status:', e)
+  }
+}
+
+const persistSyncStatus = () => {
+  try {
+    localStorage.setItem(SYNC_STATUS_KEY, JSON.stringify(syncStatus.value))
+  } catch (e) {
+    console.warn('Failed to persist sync status:', e)
+  }
+}
+
+const updateSyncStatus = (gameId: string, status: string, loading: boolean, error?: string) => {
+  syncStatus.value[gameId] = { 
+    status, 
+    loading, 
+    error, 
+    timestamp: Date.now() 
+  }
+  console.log(`Updated sync status for ${gameId}:`, syncStatus.value[gameId])
+  persistSyncStatus()
+}
+
+const clearAllSyncStatus = () => {
+  syncStatus.value = {}
+  localStorage.removeItem(SYNC_STATUS_KEY)
+  console.log('Cleared all sync status')
+}
+
+const clearSyncStatus = (gameId: string) => {
+  if (syncStatus.value[gameId]) {
+    delete syncStatus.value[gameId]
+    persistSyncStatus()
+    console.log(`Cleared sync status for ${gameId}`)
+  }
+}
+
+// Watch for changes in sync status and persist them
+watch(syncStatus, persistSyncStatus, { deep: true })
 
 let syncStartedUnlisten: UnlistenFn | null = null
 let syncProgressUnlisten: UnlistenFn | null = null
@@ -177,21 +246,20 @@ const removeGame = async (game: Game) => {
 
 const syncGame = async (game: Game) => {
   try {
-    // Set loading state
-    syncStatus.value[game.id] = { status: 'Starting sync...', loading: true }
+    // Set loading state with timestamp
+    updateSyncStatus(game.id, 'Starting sync...', true)
     
+    console.log(`Starting sync for game: ${game.id}`)
     await invoke('sync_game_with_feedback', { gameName: game.id })
+    console.log(`Sync command sent for game: ${game.id}`)
   } catch (error) {
     console.error('Failed to sync game:', error)
-    syncStatus.value[game.id] = { 
-      status: 'Sync failed', 
-      loading: false, 
-      error: error as string 
-    }
+    updateSyncStatus(game.id, 'Sync failed', false, error as string)
     // Clear error after 5 seconds
     setTimeout(() => {
       if (syncStatus.value[game.id]?.error) {
         delete syncStatus.value[game.id]
+        persistSyncStatus()
       }
     }, 5000)
   }
@@ -199,39 +267,72 @@ const syncGame = async (game: Game) => {
 
 // Setup event listeners for sync feedback
 onMounted(async () => {
+  // Load persisted sync status
+  loadPersistedSyncStatus()
+  
+  // Clear any loading states that might be stuck from previous sessions
+  const currentTimestamp = Date.now()
+  let hasStaleStates = false
+  
+  Object.keys(syncStatus.value).forEach(gameId => {
+    const status = syncStatus.value[gameId]
+    if (status.loading && status.timestamp) {
+      // If a loading state is older than 2 minutes, consider it stale
+      const twoMinutesAgo = currentTimestamp - (2 * 60 * 1000)
+      if (status.timestamp < twoMinutesAgo) {
+        console.log(`Clearing stale loading state for ${gameId}:`, status.status)
+        delete syncStatus.value[gameId]
+        hasStaleStates = true
+      }
+    }
+  })
+  
+  if (hasStaleStates) {
+    persistSyncStatus()
+    console.log('Cleared stale sync states on mount')
+  }
+
   syncStartedUnlisten = await listen('sync-started', (event: any) => {
+    console.log('Received sync-started event:', event.payload)
     const { game_name } = event.payload
-    syncStatus.value[game_name] = { status: 'Sync started...', loading: true }
+    updateSyncStatus(game_name, 'Sync started...', true)
   })
 
   syncProgressUnlisten = await listen('sync-progress', (event: any) => {
+    console.log('Received sync-progress event:', event.payload)
     const { game_name, status } = event.payload
     if (syncStatus.value[game_name]) {
-      syncStatus.value[game_name].status = status
+      updateSyncStatus(game_name, status, true)
     }
   })
 
   syncCompletedUnlisten = await listen('sync-completed', (event: any) => {
+    console.log('Received sync-completed event:', event.payload)
     const { game_name, result } = event.payload
-    syncStatus.value[game_name] = { status: result, loading: false }
-    // Clear success message after 3 seconds
+    updateSyncStatus(game_name, result || 'Sync completed successfully', false)
+    // Clear success message after 5 seconds (increased from 3)
     setTimeout(() => {
       if (syncStatus.value[game_name] && !syncStatus.value[game_name].loading) {
         delete syncStatus.value[game_name]
-      }
-    }, 3000)
-  })
-
-  syncErrorUnlisten = await listen('sync-error', (event: any) => {
-    const { game_name, error } = event.payload
-    syncStatus.value[game_name] = { status: 'Sync failed', loading: false, error }
-    // Clear error after 5 seconds
-    setTimeout(() => {
-      if (syncStatus.value[game_name]?.error) {
-        delete syncStatus.value[game_name]
+        persistSyncStatus()
       }
     }, 5000)
   })
+
+  syncErrorUnlisten = await listen('sync-error', (event: any) => {
+    console.log('Received sync-error event:', event.payload)
+    const { game_name, error } = event.payload
+    updateSyncStatus(game_name, 'Sync failed', false, error)
+    // Clear error after 8 seconds (increased)
+    setTimeout(() => {
+      if (syncStatus.value[game_name]?.error) {
+        delete syncStatus.value[game_name]
+        persistSyncStatus()
+      }
+    }, 8000)
+  })
+
+  console.log('All sync event listeners set up')
 })
 
 onUnmounted(() => {
@@ -263,13 +364,23 @@ const toggleWatching = async (game: Game) => {
   <div class="game-list">
     <div class="game-list-header">
       <h2>Game Save Files</h2>
-      <button 
-        class="btn btn-primary"
-        @click="showAddForm = true"
-        :disabled="loading"
-      >
-        Add Game
-      </button>
+      <div class="header-actions">
+        <button 
+          v-if="Object.keys(syncStatus).length > 0"
+          class="btn btn-secondary btn-small"
+          @click="clearAllSyncStatus"
+          title="Clear all sync status"
+        >
+          Clear All Status
+        </button>
+        <button 
+          class="btn btn-primary"
+          @click="showAddForm = true"
+          :disabled="loading"
+        >
+          Add Game
+        </button>
+      </div>
     </div>
 
     <div v-if="games.length === 0" class="empty-state">
@@ -339,8 +450,17 @@ const toggleWatching = async (game: Game) => {
             'sync-error': syncStatus[game.id].error,
             'sync-success': !syncStatus[game.id].loading && !syncStatus[game.id].error
           }">
-            <div class="sync-status-text">
-              {{ syncStatus[game.id].status }}
+            <div class="sync-status-content">
+              <div class="sync-status-text">
+                {{ syncStatus[game.id].status }}
+              </div>
+              <button 
+                class="btn-clear-status"
+                @click="clearSyncStatus(game.id)"
+                title="Clear sync status"
+              >
+                ×
+              </button>
             </div>
             <div v-if="syncStatus[game.id].error" class="sync-error-details">
               {{ syncStatus[game.id].error }}
@@ -850,5 +970,41 @@ const toggleWatching = async (game: Game) => {
   margin-top: 0.25rem;
   font-size: 0.75rem;
   opacity: 0.9;
+}
+
+.sync-status-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.btn-clear-status {
+  background: none;
+  border: none;
+  color: currentColor;
+  cursor: pointer;
+  font-size: 1.2rem;
+  font-weight: bold;
+  padding: 0;
+  margin-left: 0.5rem;
+  opacity: 0.7;
+  transition: opacity 0.2s ease;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.btn-clear-status:hover {
+  opacity: 1;
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+.header-actions {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
 }
 </style>

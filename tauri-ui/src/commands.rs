@@ -389,13 +389,18 @@ pub async fn sync_game_with_feedback(
     info!("Starting sync for game: {}", game_name);
     
     // Emit sync started event
-    let _ = app_handle.emit("sync-started", serde_json::json!({
+    debug!("Emitting sync-started event for: {}", game_name);
+    let started_payload = serde_json::json!({
         "game_name": game_name,
         "timestamp": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
-    }));
+    });
+    match app_handle.emit("sync-started", &started_payload) {
+        Ok(_) => debug!("Successfully emitted sync-started event"),
+        Err(e) => error!("Failed to emit sync-started event: {}", e)
+    }
     
     // Load current config
     let config = match state.config_manager.load_config().await {
@@ -476,48 +481,75 @@ pub async fn sync_game_with_feedback(
     }
     
     // Emit sync progress
-    let _ = app_handle.emit("sync-progress", serde_json::json!({
+    debug!("Emitting sync-progress event for: {}", game_name);
+    let progress_payload = serde_json::json!({
         "game_name": game_name,
         "status": "Connecting to AWS S3...",
         "timestamp": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
-    }));
+    });
+    match app_handle.emit("sync-progress", &progress_payload) {
+        Ok(_) => debug!("Successfully emitted sync-progress event"),
+        Err(e) => error!("Failed to emit sync-progress event: {}", e)
+    }
     
     // Perform the actual sync using existing core functionality
-    match GameSaveSync::new(config.clone()).await {
-        Ok(sync_handler) => {
-            match sync_handler.sync_game(&game_name).await {
-                Ok(_) => {
-                    let result = "Sync completed successfully".to_string();
-                    // Emit sync completed event
-                    let _ = app_handle.emit("sync-completed", serde_json::json!({
-                        "game_name": game_name,
-                        "result": result,
-                        "timestamp": std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs()
-                    }));
-                    Ok(result)
-                }
-                Err(e) => {
-                    let error_msg = format!("Sync failed: {}", e);
-                    let _ = app_handle.emit("sync-error", serde_json::json!({
-                        "game_name": game_name,
-                        "error": error_msg,
-                        "timestamp": std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs()
-                    }));
-                    Err(error_msg)
-                }
-            }
+    debug!("About to create GameSaveSync");
+    
+    // Add a timeout to prevent hanging
+    let sync_result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        async {
+            let sync_handler = GameSaveSync::new(config.clone()).await?;
+            debug!("Successfully created GameSaveSync, starting sync for: {}", game_name);
+            sync_handler.sync_game(&game_name).await?;
+            debug!("sync_game completed successfully for: {}", game_name);
+            Ok::<(), anyhow::Error>(())
         }
-        Err(e) => {
-            let error_msg = format!("Failed to initialize sync handler: {}", e);
+    ).await;
+    
+    match sync_result {
+        Ok(Ok(_)) => {
+            debug!("Sync completed successfully (with timeout)");
+            let result = "Sync completed successfully".to_string();
+            // Emit sync completed event
+            debug!("Emitting sync-completed event for: {}", game_name);
+            let event_payload = serde_json::json!({
+                "game_name": game_name,
+                "result": result,
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            });
+            debug!("Event payload: {}", event_payload);
+            
+            match app_handle.emit("sync-completed", &event_payload) {
+                Ok(_) => debug!("Successfully emitted sync-completed event"),
+                Err(e) => error!("Failed to emit sync-completed event: {}", e)
+            }
+            
+            debug!("Returning success result for: {}", game_name);
+            Ok(result)
+        }
+        Ok(Err(e)) => {
+            debug!("sync_game failed: {}", e);
+            let error_msg = format!("Sync failed: {}", e);
+            let _ = app_handle.emit("sync-error", serde_json::json!({
+                "game_name": game_name,
+                "error": error_msg,
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            }));
+            Err(error_msg)
+        }
+        Err(_timeout) => {
+            debug!("Sync timed out after 30 seconds");
+            let error_msg = "Sync operation timed out after 30 seconds".to_string();
             let _ = app_handle.emit("sync-error", serde_json::json!({
                 "game_name": game_name,
                 "error": error_msg,

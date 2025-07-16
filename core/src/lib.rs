@@ -213,6 +213,7 @@ impl GameSaveSync {
     }
 
     pub async fn sync_game(&self, game_name: &str) -> Result<()> {
+        debug!("sync_game starting for: {}", game_name);
         let game_config = self.config.games.get(game_name)
             .context("Game not found in configuration")?;
 
@@ -221,10 +222,14 @@ impl GameSaveSync {
             return Ok(());
         }
 
+        debug!("Processing {} save paths for game: {}", game_config.save_paths.len(), game_name);
         for save_path in &game_config.save_paths {
+            debug!("Syncing save path: {}", save_path);
             self.sync_file(save_path, game_name).await?;
+            debug!("Completed syncing save path: {}", save_path);
         }
 
+        debug!("sync_game completed successfully for: {}", game_name);
         Ok(())
     }
 

@@ -11,12 +11,14 @@ use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use uuid::Uuid;
 use tracing::{info, error, debug};
+use chrono;
 
 // Application state
 pub struct AppState {
     pub config_manager: ConfigManager,
     pub watcher_manager: Arc<Mutex<WatcherManager>>,
     pub sync_sessions: Arc<Mutex<HashMap<String, String>>>, // game_name -> session_id
+    pub sync_history: Arc<Mutex<HashMap<String, String>>>, // game_name -> last_sync_timestamp
 }
 
 impl AppState {
@@ -24,11 +26,13 @@ impl AppState {
         let config_manager = ConfigManager::new().map_err(|e| e.to_string())?;
         let watcher_manager = Arc::new(Mutex::new(WatcherManager::new()));
         let sync_sessions = Arc::new(Mutex::new(HashMap::new()));
+        let sync_history = Arc::new(Mutex::new(HashMap::new()));
 
         Ok(Self {
             config_manager,
             watcher_manager,
             sync_sessions,
+            sync_history,
         })
     }
 }
@@ -115,6 +119,47 @@ pub async fn get_games(state: State<'_, AppState>) -> Result<HashMap<String, Gam
     Ok(config.games)
 }
 
+#[derive(serde::Serialize)]
+pub struct GameWithStatus {
+    pub id: String,
+    pub name: String,
+    pub save_paths: Vec<String>,
+    pub sync_enabled: bool,
+    pub last_sync: Option<String>,
+    pub is_watching: bool,
+}
+
+#[command]
+pub async fn get_games_with_status(state: State<'_, AppState>) -> Result<Vec<GameWithStatus>, String> {
+    let config = state.config_manager.load_config().await.map_err(|e| e.to_string())?;
+    let watching_games = if let Ok(watcher) = state.watcher_manager.lock() {
+        watcher.watched_games()
+    } else {
+        Vec::new()
+    };
+    
+    let sync_history = if let Ok(history) = state.sync_history.lock() {
+        history.clone()
+    } else {
+        HashMap::new()
+    };
+    
+    let mut games_with_status = Vec::new();
+    
+    for (game_id, game_config) in config.games.iter() {
+        games_with_status.push(GameWithStatus {
+            id: game_id.clone(),
+            name: game_config.name.clone(),
+            save_paths: game_config.save_paths.clone(),
+            sync_enabled: game_config.sync_enabled,
+            last_sync: sync_history.get(game_id).cloned(),
+            is_watching: watching_games.contains(game_id),
+        });
+    }
+    
+    Ok(games_with_status)
+}
+
 #[command]
 pub async fn add_game(
     name: String, 
@@ -170,12 +215,46 @@ pub async fn remove_game(name: String, state: State<'_, AppState>) -> Result<Str
 // Sync commands
 #[command]
 pub async fn sync_game(game_name: String, state: State<'_, AppState>) -> Result<String, String> {
-    let config = state.config_manager.load_config().await.map_err(|e| e.to_string())?;
-    let sync_handler = GameSaveSync::new(config).await.map_err(|e| e.to_string())?;
+    info!("sync_game command called for: {}", game_name);
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    debug!("Config loaded. S3 bucket: {:?}, Region: {:?}", config.s3_bucket, config.s3_region);
+    debug!("Games in config: {:?}", config.games.keys().collect::<Vec<_>>());
+    
+    let sync_handler = GameSaveSync::new(config).await.map_err(|e| {
+        error!("Failed to create GameSaveSync: {}", e);
+        e.to_string()
+    })?;
     
     info!("Starting sync for game: {}", game_name);
-    sync_handler.sync_game(&game_name).await.map_err(|e| e.to_string())?;
-    Ok(format!("Successfully synced {}", game_name))
+    
+    let result = sync_handler.sync_game(&game_name).await.map_err(|e| {
+        error!("Sync failed for {}: {}", game_name, e);
+        e.to_string()
+    });
+    
+    match result {
+        Ok(_) => {
+            info!("Sync completed successfully for: {}", game_name);
+            
+            // Record sync timestamp
+            if let Ok(mut history) = state.sync_history.lock() {
+                let timestamp = chrono::Utc::now().to_rfc3339();
+                history.insert(game_name.clone(), timestamp);
+                debug!("Recorded sync timestamp for: {}", game_name);
+            }
+            
+            Ok(format!("Successfully synced {}", game_name))
+        }
+        Err(e) => {
+            error!("Sync failed: {}", e);
+            Err(e)
+        }
+    }
 }
 
 #[command]
@@ -245,20 +324,6 @@ pub async fn get_watching_games(state: State<'_, AppState>) -> Result<Vec<String
 }
 
 // File system commands
-#[command]
-pub async fn select_folder() -> Result<Option<String>, String> {
-    // For now, return an error asking user to implement this differently
-    // In Tauri v2, dialogs need to be called from the frontend
-    Err("Please use the frontend dialog API for folder selection in Tauri v2".to_string())
-}
-
-#[command]
-pub async fn select_file() -> Result<Option<String>, String> {
-    // For now, return an error asking user to implement this differently
-    // In Tauri v2, dialogs need to be called from the frontend
-    Err("Please use the frontend dialog API for file selection in Tauri v2".to_string())
-}
-
 #[command]
 pub async fn validate_path(path: String) -> Result<bool, String> {
     let path_buf = PathBuf::from(&path);
@@ -515,6 +580,14 @@ pub async fn sync_game_with_feedback(
         Ok(Ok(_)) => {
             debug!("Sync completed successfully (with timeout)");
             let result = "Sync completed successfully".to_string();
+            
+            // Record sync timestamp
+            if let Ok(mut history) = state.sync_history.lock() {
+                let timestamp = chrono::Utc::now().to_rfc3339();
+                history.insert(game_name.clone(), timestamp);
+                debug!("Recorded sync timestamp for: {}", game_name);
+            }
+            
             // Emit sync completed event
             debug!("Emitting sync-completed event for: {}", game_name);
             let event_payload = serde_json::json!({

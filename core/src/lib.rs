@@ -176,12 +176,20 @@ pub struct GameSaveSync {
 
 impl GameSaveSync {
     pub async fn new(config: SyncConfig) -> Result<Self> {
+        debug!("Creating GameSaveSync with bucket: {:?}", config.s3_bucket);
+        
         let s3_client = if config.s3_bucket.is_some() {
+            debug!("S3 bucket configured, setting up client...");
+            
             // Get decrypted credentials
-            let access_key = config.get_aws_access_key()?;
-            let secret_key = config.get_aws_secret_key()?;
+            let access_key = config.get_aws_access_key().context("Failed to get AWS access key")?;
+            let secret_key = config.get_aws_secret_key().context("Failed to get AWS secret key")?;
+            
+            debug!("Access key present: {}", access_key.is_some());
+            debug!("Secret key present: {}", secret_key.is_some());
             
             let aws_config = if let (Some(access_key), Some(secret_key)) = (access_key, secret_key) {
+                debug!("Using custom credentials for AWS client");
                 // Create custom credentials
                 use aws_credential_types::Credentials;
                 let credentials = Credentials::new(
@@ -198,6 +206,7 @@ impl GameSaveSync {
                     .load()
                     .await
             } else {
+                debug!("Using default AWS credentials (IAM role, environment, etc.)");
                 // Use default credentials (IAM role, environment, etc.)
                 aws_config::defaults(BehaviorVersion::latest())
                     .load()
@@ -206,6 +215,7 @@ impl GameSaveSync {
             
             Some(Client::new(&aws_config))
         } else {
+            debug!("No S3 bucket configured, skipping S3 client setup");
             None
         };
 
@@ -234,11 +244,21 @@ impl GameSaveSync {
     }
 
     async fn sync_file(&self, file_path: &str, game_name: &str) -> Result<()> {
-        if !Path::new(file_path).exists() {
-            warn!("Save file does not exist: {}", file_path);
+        debug!("sync_file called for: {} (game: {})", file_path, game_name);
+        
+        let path = Path::new(file_path);
+        
+        if !path.exists() {
+            warn!("Save path does not exist: {}", file_path);
             return Ok(());
         }
 
+        if path.is_dir() {
+            debug!("Path is a directory, syncing all files within: {}", file_path);
+            return self.sync_directory(file_path, game_name).await;
+        }
+
+        // Handle individual file
         // Check if file is locked
         if self.is_file_locked(file_path).await? {
             warn!("File is locked, skipping sync: {}", file_path);
@@ -248,11 +268,63 @@ impl GameSaveSync {
         let data = fs::read(file_path).await
             .context("Failed to read save file")?;
 
+        debug!("Read {} bytes from file: {}", data.len(), file_path);
+
         let hash = self.calculate_hash(&data);
         debug!("File hash for {}: {}", file_path, hash);
 
         if let Some(client) = &self.s3_client {
+            debug!("S3 client available, uploading to S3...");
             self.upload_to_s3(client, &data, game_name, file_path).await?;
+            debug!("S3 upload completed for: {}", file_path);
+        } else {
+            warn!("No S3 client configured, skipping upload for: {}", file_path);
+        }
+
+        Ok(())
+    }
+
+    async fn sync_directory(&self, dir_path: &str, game_name: &str) -> Result<()> {
+        debug!("Syncing directory: {}", dir_path);
+        
+        let mut entries = fs::read_dir(dir_path).await
+            .context("Failed to read directory")?;
+
+        while let Some(entry) = entries.next_entry().await
+            .context("Failed to read directory entry")? {
+            
+            let path = entry.path();
+            
+            if path.is_file() {
+                let file_path = path.to_str()
+                    .context("Invalid file path")?;
+                debug!("Found file in directory: {}", file_path);
+                
+                // Check if file is locked
+                if self.is_file_locked(file_path).await? {
+                    warn!("File is locked, skipping sync: {}", file_path);
+                    continue;
+                }
+
+                let data = fs::read(&path).await
+                    .context("Failed to read save file")?;
+
+                debug!("Read {} bytes from file: {}", data.len(), file_path);
+
+                let hash = self.calculate_hash(&data);
+                debug!("File hash for {}: {}", file_path, hash);
+
+                if let Some(client) = &self.s3_client {
+                    debug!("S3 client available, uploading to S3...");
+                    self.upload_to_s3(client, &data, game_name, file_path).await?;
+                    debug!("S3 upload completed for: {}", file_path);
+                } else {
+                    warn!("No S3 client configured, skipping upload for: {}", file_path);
+                }
+            } else if path.is_dir() {
+                // Optionally handle subdirectories recursively
+                debug!("Skipping subdirectory: {:?}", path);
+            }
         }
 
         Ok(())
@@ -287,24 +359,34 @@ impl GameSaveSync {
         let bucket = self.config.s3_bucket.as_ref()
             .context("S3 bucket not configured")?;
 
+        debug!("Uploading to S3 bucket: {}", bucket);
+
         let file_name = Path::new(file_path)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown");
 
         let key = format!("{}/{}", game_name, file_name);
+        debug!("S3 key: {}, data size: {} bytes", key, data.len());
 
-        client
+        let result = client
             .put_object()
             .bucket(bucket)
             .key(&key)
             .body(ByteStream::from(data.to_vec()))
             .send()
-            .await
-            .context("Failed to upload to S3")?;
+            .await;
 
-        info!("Uploaded {} to S3: {}", file_path, key);
-        Ok(())
+        match result {
+            Ok(_) => {
+                info!("Successfully uploaded {} to S3: {}", file_path, key);
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to upload {} to S3: {}", file_path, e);
+                Err(e.into())
+            }
+        }
     }
 
     pub async fn download_from_s3(&self, game_name: &str, file_name: &str) -> Result<Vec<u8>> {

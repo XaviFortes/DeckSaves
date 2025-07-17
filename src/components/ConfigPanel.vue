@@ -1,7 +1,26 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { Config, SystemInfo } from '../types'
+import { open } from '@tauri-apps/plugin-dialog'
+
+interface Config {
+  aws_profile: string
+  s3_bucket: string
+  s3_region: string
+  aws_access_key_id?: string
+  aws_secret_access_key?: string
+  peer_sync_enabled: boolean
+  websocket_url: string
+  local_base_path: string
+  sync_interval_minutes: number
+  auto_sync: boolean
+  enable_compression: boolean
+  games: Record<string, any>
+}
+
+interface SystemInfo {
+  [key: string]: any
+}
 
 interface Props {
   config: Config | null
@@ -66,7 +85,11 @@ const isDirty = computed(() => {
 
 const selectLocalBasePath = async () => {
   try {
-    const path = await invoke<string>('select_folder')
+    const path = await open({
+      directory: true,
+      multiple: false,
+      title: 'Select Local Base Path Folder'
+    })
     if (path) {
       localConfig.value.local_base_path = path
     }

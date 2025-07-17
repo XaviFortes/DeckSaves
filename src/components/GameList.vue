@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { open } from '@tauri-apps/plugin-dialog'
 import type { Game, GameConfig } from '../types'
 
 interface Props {
@@ -12,6 +13,7 @@ interface Emits {
   (e: 'game-added', game: Game): void
   (e: 'game-updated', game: Game): void
   (e: 'game-removed', gameId: string): void
+  (e: 'refresh-games'): void
 }
 
 const props = defineProps<Props>()
@@ -112,7 +114,11 @@ const removePath = (index: number) => {
 
 const selectFolder = async (index: number) => {
   try {
-    const path = await invoke<string>('select_folder')
+    const path = await open({
+      directory: true,
+      multiple: false,
+      title: 'Select Game Save Folder'
+    })
     if (path) {
       newGame.value.save_paths[index] = path
     }
@@ -310,6 +316,8 @@ onMounted(async () => {
     console.log('Received sync-completed event:', event.payload)
     const { game_name, result } = event.payload
     updateSyncStatus(game_name, result || 'Sync completed successfully', false)
+    // Emit refresh games to update the sync status in the parent component
+    emit('refresh-games')
     // Clear success message after 5 seconds (increased from 3)
     setTimeout(() => {
       if (syncStatus.value[game_name] && !syncStatus.value[game_name].loading) {

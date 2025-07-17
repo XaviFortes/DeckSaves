@@ -20,25 +20,26 @@ onMounted(async () => {
 const loadInitialData = async () => {
   try {
     const [gamesData, configData] = await Promise.all([
-      invoke<Record<string, any>>('get_games'),
+      invoke<Game[]>('get_games_with_status'),
       invoke<Config>('get_config')
     ])
     
-    // Convert games object to array format for easier handling
-    games.value = Object.entries(gamesData).map(([id, game]) => ({
-      id,
-      name: game.name,
-      save_paths: game.save_paths,
-      sync_enabled: game.sync_enabled,
-      last_sync: null, // Will be populated from sync status
-      is_watching: false // Will be populated from watching status
-    }))
-    
+    games.value = gamesData
     config.value = configData
   } catch (error) {
     console.error('Failed to load initial data:', error)
   } finally {
     loading.value = false
+  }
+}
+
+const refreshGames = async () => {
+  try {
+    const gamesData = await invoke<Game[]>('get_games_with_status')
+    games.value = gamesData
+    console.log('Games data refreshed')
+  } catch (error) {
+    console.error('Failed to refresh games data:', error)
   }
 }
 
@@ -119,6 +120,7 @@ const handleConfigUpdated = (newConfig: Config) => {
           @game-added="handleGameAdded"
           @game-updated="handleGameUpdated"
           @game-removed="handleGameRemoved"
+          @refresh-games="refreshGames"
         />
         
         <SyncStatus 

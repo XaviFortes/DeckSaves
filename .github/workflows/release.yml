@@ -13,7 +13,7 @@ on:
 jobs:
   prepare-release:
     name: Prepare Release
-    runs-on: ubuntu-latest
+    runs-on: ['self-hosted', 'macOS', 'ARM64']
     outputs:
       version: ${{ steps.version.outputs.version }}
       changelog: ${{ steps.changelog.outputs.changelog }}
@@ -206,9 +206,31 @@ jobs:
           VERSION=${{ needs.prepare-release.outputs.version }}
           VERSION=${VERSION#v}
           cd tauri-ui
-          npm version $VERSION --no-git-tag-version
+          # Check if version needs to be updated
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+            npm version $VERSION --no-git-tag-version
+          else
+            echo "Version already up to date: $VERSION"
+          fi
           # Update tauri.conf.json
           sed -i.bak "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" tauri.conf.json
+
+      - name: Update version in tauri.conf.json (Windows)
+        if: ${{ contains(matrix.name, 'windows') }}
+        run: |
+          $VERSION = "${{ needs.prepare-release.outputs.version }}"
+          $VERSION = $VERSION -replace '^v', ''
+          Set-Location tauri-ui
+          # Check if version needs to be updated
+          $CURRENT_VERSION = (Get-Content package.json | ConvertFrom-Json).version
+          if ($CURRENT_VERSION -ne $VERSION) {
+            npm version $VERSION --no-git-tag-version
+          } else {
+            Write-Output "Version already up to date: $VERSION"
+          }
+          # Update tauri.conf.json
+          (Get-Content tauri.conf.json) -replace '"version": ".*"', "`"version`": `"$VERSION`"" | Set-Content tauri.conf.json
 
       - name: Build CLI
         run: |

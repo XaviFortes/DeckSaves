@@ -7,11 +7,10 @@ on:
   pull_request:
     branches: [main, develop]
   workflow_dispatch:
-
 jobs:
   test:
     name: Test Suite
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -49,33 +48,37 @@ jobs:
         run: npm run build
 
   build:
-    name: Build ${{ matrix.platform }}
+    name: Build ${{ matrix.name }}
     needs: test
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
+          - name: 'macos-arm64'
+            labels: ['self-hosted', 'macOS', 'ARM64']
             args: '--target aarch64-apple-darwin'
             target: 'aarch64-apple-darwin'
-          - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
-            target: 'x86_64-apple-darwin'
-          - platform: 'ubuntu-22.04'
+          # - name: 'macos-x64'
+            # labels: ['macos-latest']
+            # args: '--target x86_64-apple-darwin'
+            # target: 'x86_64-apple-darwin'
+          - name: 'ubuntu-x64'
+            labels: ['ubuntu-22.04']
             args: ''
             target: 'x86_64-unknown-linux-gnu'
-          - platform: 'windows-latest'
+          - name: 'windows-x64'
+            labels: ['self-hosted', 'Windows', 'X64']
             args: '--target x86_64-pc-windows-msvc'
             target: 'x86_64-pc-windows-msvc'
 
-    runs-on: ${{ matrix.platform }}
-    continue-on-error: ${{ matrix.platform == 'windows-latest' }}
+    runs-on: ${{ matrix.labels }}
+    continue-on-error: ${{ contains(matrix.name, 'windows') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install dependencies (Ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.name == 'ubuntu-x64'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
@@ -143,13 +146,13 @@ jobs:
           export MACOS_HEADLESS=1
 
       - name: Build CLI (Unix)
-        if: matrix.platform != 'windows-latest'
+        if: ${{ !contains(matrix.name, 'windows') }}
         run: |
           cd cli
           cargo build --release --target ${{ matrix.target }}
 
       - name: Build CLI (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: ${{ contains(matrix.name, 'windows') }}
         run: |
           cd cli
           cargo build --release --target ${{ matrix.target }}
@@ -187,8 +190,17 @@ jobs:
           echo "Contents of target:"
           find target -name "game-sync*" 2>/dev/null || echo "No CLI files found"
 
+      - name: Debug - List build output (Windows)
+        if: ${{ contains(matrix.name, 'windows') }}
+        run: |
+          echo "Contents of target directory:"
+          Get-ChildItem -Path target -Recurse | Select-Object FullName | Format-Table -HideTableHeaders
+          echo "Looking for specific files:"
+          if (Test-Path "target\release\game-sync.exe") { echo "Found: target\release\game-sync.exe" } else { echo "Not found: target\release\game-sync.exe" }
+          if (Test-Path "target\x86_64-pc-windows-msvc\release\game-sync.exe") { echo "Found: target\x86_64-pc-windows-msvc\release\game-sync.exe" } else { echo "Not found: target\x86_64-pc-windows-msvc\release\game-sync.exe" }
+
       - name: Upload CLI artifacts (Unix)
-        if: matrix.platform != 'windows-latest'
+        if: ${{ !contains(matrix.name, 'windows') }}
         uses: actions/upload-artifact@v4
         with:
           name: game-sync-cli-${{ matrix.target }}
@@ -198,7 +210,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload CLI artifacts (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: ${{ contains(matrix.name, 'windows') }}
         uses: actions/upload-artifact@v4
         with:
           name: game-sync-cli-${{ matrix.target }}
@@ -208,7 +220,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Tauri artifacts (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: ${{ contains(matrix.name, 'macos') }}
         uses: actions/upload-artifact@v4
         with:
           name: decksaves-macos-${{ matrix.target }}
@@ -219,7 +231,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Tauri artifacts (Linux)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.name == 'ubuntu-x64'
         uses: actions/upload-artifact@v4
         with:
           name: decksaves-linux-${{ matrix.target }}
@@ -230,7 +242,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Tauri artifacts (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: ${{ contains(matrix.name, 'windows') }}
         uses: actions/upload-artifact@v4
         with:
           name: decksaves-windows-${{ matrix.target }}

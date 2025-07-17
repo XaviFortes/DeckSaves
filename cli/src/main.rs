@@ -319,23 +319,23 @@ async fn install_service(user: bool) -> Result<()> {
 #[cfg(target_os = "windows")]
 async fn install_service(_user: bool) -> Result<()> {
     use service_manager::*;
-
-    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
-
-    let service_info = ServiceInfo {
-        name: "DeckSaves".into(),
-        display_name: "DeckSaves Game Save Synchronization".into(),
-        service_type: ServiceType::OWN_PROCESS,
-        start_type: ServiceStartType::AUTOMATIC,
-        error_control: ServiceErrorControl::NORMAL,
-        executable_path: std::env::current_exe()?,
-        launch_arguments: vec!["daemon".into(), "--service".into()],
-        dependencies: vec![],
-        account_name: None,
-        account_password: None,
+    
+    let manager = <dyn ServiceManager>::native()?;
+    
+    let label: ServiceLabel = "DeckSaves".parse()?;
+    let executable_path = std::env::current_exe()?;
+    
+    let install_ctx = ServiceInstallCtx {
+        label: label.clone(),
+        program: executable_path,
+        args: vec!["daemon".into()],
+        contents: None,
+        username: None,
+        working_directory: None,
+        environment: None,
     };
 
-    let service = manager.create_service(&service_info, ServiceAccess::CHANGE_CONFIG)?;
+    manager.install(install_ctx)?;
     info!("Windows service installed successfully");
 
     Ok(())
@@ -391,9 +391,10 @@ async fn start_service(_user: bool) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         use service_manager::*;
-        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-        let service = manager.open_service("DeckSaves", ServiceAccess::START)?;
-        service.start::<&str>(&[])?;
+        let manager = <dyn ServiceManager>::native()?;
+        let label: ServiceLabel = "DeckSaves".parse()?;
+        let start_ctx = ServiceStartCtx { label };
+        manager.start(start_ctx)?;
         info!("DeckSaves service started successfully");
     }
 
@@ -450,9 +451,10 @@ async fn stop_service(_user: bool) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         use service_manager::*;
-        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-        let service = manager.open_service("DeckSaves", ServiceAccess::STOP)?;
-        service.stop()?;
+        let manager = <dyn ServiceManager>::native()?;
+        let label: ServiceLabel = "DeckSaves".parse()?;
+        let stop_ctx = ServiceStopCtx { label };
+        manager.stop(stop_ctx)?;
         info!("DeckSaves service stopped successfully");
     }
 
@@ -541,9 +543,10 @@ async fn uninstall_service(user: bool) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         use service_manager::*;
-        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-        let service = manager.open_service("DeckSaves", ServiceAccess::DELETE)?;
-        service.delete()?;
+        let manager = <dyn ServiceManager>::native()?;
+        let label: ServiceLabel = "DeckSaves".parse()?;
+        let uninstall_ctx = ServiceUninstallCtx { label };
+        manager.uninstall(uninstall_ctx)?;
         info!("Windows service uninstalled successfully");
     }
 
@@ -599,11 +602,9 @@ async fn show_service_status(_user: bool) -> Result<()> {
 
     #[cfg(target_os = "windows")]
     {
-        use service_manager::*;
-        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
-        let service = manager.open_service("DeckSaves", ServiceAccess::QUERY_STATUS)?;
-        let status = service.query_status()?;
-        println!("Service Status: {:?}", status.current_state);
+        // Service status checking is not directly available in service-manager
+        // We'll just print a message for now
+        info!("Windows service status checking not yet implemented with service-manager");
     }
 
     Ok(())

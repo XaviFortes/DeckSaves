@@ -42,45 +42,65 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
   build-release:
-    name: Build Release (${{ matrix.platform }})
+    name: Build Release (${{ matrix.name }})
     needs: prepare-release
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: 'macos-latest'
+          - name: 'macos-arm64'
+            labels: ['self-hosted', 'macOS', 'ARM64']
             args: '--target aarch64-apple-darwin'
             target: 'aarch64-apple-darwin'
             arch: 'arm64'
-          - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
-            target: 'x86_64-apple-darwin'
-            arch: 'x64'
-          - platform: 'ubuntu-22.04'
+          - name: 'ubuntu-x64'
+            labels: ['ubuntu-22.04']
             args: ''
             target: 'x86_64-unknown-linux-gnu'
             arch: 'x64'
-          - platform: 'windows-latest'
+          - name: 'windows-x64'
+            labels: ['self-hosted', 'Windows', 'X64']
             args: '--target x86_64-pc-windows-msvc'
             target: 'x86_64-pc-windows-msvc'
             arch: 'x64'
 
-    runs-on: ${{ matrix.platform }}
-    continue-on-error: ${{ matrix.platform == 'windows-latest' }}
+    runs-on: ${{ matrix.labels }}
+    continue-on-error: ${{ contains(matrix.name, 'windows') }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install dependencies (Ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: matrix.name == 'ubuntu-x64'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Install Rust
+      - name: Install Rust (Unix)
+        if: ${{ !contains(matrix.name, 'windows') }}
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Setup Rust (Windows)
+        if: ${{ contains(matrix.name, 'windows') }}
+        run: |
+          # Check if Rust is already installed and working
+          if (Get-Command rustc -ErrorAction SilentlyContinue) {
+            Write-Output "Rust is already installed:"
+            rustc --version
+            cargo --version
+          } else {
+            Write-Output "Rust not found, this should not happen on self-hosted runner"
+            exit 1
+          }
+          
+          # Ensure the target is installed
+          Write-Output "Adding target: ${{ matrix.target }}"
+          rustup target add ${{ matrix.target }}
+          
+          # Verify target is available
+          rustup target list --installed | findstr ${{ matrix.target }}
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -99,7 +119,8 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Update version in Cargo.toml files
+      - name: Update version in Cargo.toml files (Unix)
+        if: ${{ !contains(matrix.name, 'windows') }}
         run: |
           VERSION=${{ needs.prepare-release.outputs.version }}
           # Remove 'v' prefix if present
@@ -111,13 +132,76 @@ jobs:
           sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" cli/Cargo.toml
           sed -i.bak "s/^version = \".*\"/version = \"$VERSION\"/" tauri-ui/Cargo.toml
 
-      - name: Update version in package.json
+      - name: Update version in Cargo.toml files (Windows)
+        if: ${{ contains(matrix.name, 'windows') }}
+        run: |
+          $VERSION = "${{ needs.prepare-release.outputs.version }}"
+          # Remove 'v' prefix if present
+          $VERSION = $VERSION -replace '^v', ''
+          
+          # Update version in all Cargo.toml files
+          (Get-Content Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content Cargo.toml
+          (Get-Content core/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content core/Cargo.toml
+          (Get-Content cli/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content cli/Cargo.toml
+          (Get-Content tauri-ui/Cargo.toml) -replace '^version = ".*"', "version = `"$VERSION`"" | Set-Content tauri-ui/Cargo.toml
+
+      - name: Update version in package.json (Unix)
+        if: ${{ !contains(matrix.name, 'windows') }}
         run: |
           VERSION=${{ needs.prepare-release.outputs.version }}
           VERSION=${VERSION#v}
-          npm version $VERSION --no-git-tag-version
+          # Check if version needs to be updated
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+            npm version $VERSION --no-git-tag-version
+          else
+            echo "Version already up to date: $VERSION"
+          fi
 
-      - name: Update version in tauri.conf.json
+      - name: Update version in package.json (Windows)
+        if: ${{ contains(matrix.name, 'windows') }}
+        run: |
+          $VERSION = "${{ needs.prepare-release.outputs.version }}"
+          $VERSION = $VERSION -replace '^v', ''
+          # Check if version needs to be updated
+          $CURRENT_VERSION = (Get-Content package.json | ConvertFrom-Json).version
+          if ($CURRENT_VERSION -ne $VERSION) {
+            npm version $VERSION --no-git-tag-version
+          } else {
+            Write-Output "Version already up to date: $VERSION"
+          }
+
+      - name: Update version in tauri.conf.json (Unix)
+        if: ${{ !contains(matrix.name, 'windows') }}
+        run: |
+          VERSION=${{ needs.prepare-release.outputs.version }}
+          VERSION=${VERSION#v}
+          cd tauri-ui
+          # Check if version needs to be updated
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+            npm version $VERSION --no-git-tag-version
+          else
+            echo "Version already up to date: $VERSION"
+          fi
+          # Update tauri.conf.json
+          sed -i.bak "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" tauri.conf.json
+
+      - name: Update version in tauri.conf.json (Windows)
+        if: ${{ contains(matrix.name, 'windows') }}
+        run: |
+          $VERSION = "${{ needs.prepare-release.outputs.version }}"
+          $VERSION = $VERSION -replace '^v', ''
+          Set-Location tauri-ui
+          # Check if version needs to be updated
+          $CURRENT_VERSION = (Get-Content package.json | ConvertFrom-Json).version
+          if ($CURRENT_VERSION -ne $VERSION) {
+            npm version $VERSION --no-git-tag-version
+          } else {
+            Write-Output "Version already up to date: $VERSION"
+          }
+          # Update tauri.conf.json
+          (Get-Content tauri.conf.json) -replace '"version": ".*"', "`"version`": `"$VERSION`"" | Set-Content tauri.conf.json
         run: |
           VERSION=${{ needs.prepare-release.outputs.version }}
           VERSION=${VERSION#v}
@@ -162,13 +246,13 @@ jobs:
           args: ${{ matrix.args }}
 
       - name: Generate checksums (Unix)
-        if: matrix.platform != 'windows-latest'
+        if: ${{ !contains(matrix.name, 'windows') }}
         run: |
           cd target/${{ matrix.target }}/release
           sha256sum game-sync > game-sync-${{ matrix.target }}.sha256
 
       - name: Generate checksums (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: ${{ contains(matrix.name, 'windows') }}
         run: |
           cd target/${{ matrix.target }}/release
           certutil -hashfile game-sync.exe SHA256 > game-sync-${{ matrix.target }}.sha256

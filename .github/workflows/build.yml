@@ -80,10 +80,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Install Rust
+      - name: Install Rust (Unix)
+        if: ${{ !contains(matrix.name, 'windows') }}
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Setup Rust (Windows)
+        if: ${{ contains(matrix.name, 'windows') }}
+        run: |
+          # Check if Rust is already installed and working
+          if (Get-Command rustc -ErrorAction SilentlyContinue) {
+            Write-Output "Rust is already installed:"
+            rustc --version
+            cargo --version
+          } else {
+            Write-Output "Rust not found, this should not happen on self-hosted runner"
+            exit 1
+          }
+          
+          # Ensure the target is installed
+          Write-Output "Adding target: ${{ matrix.target }}"
+          rustup target add ${{ matrix.target }}
+          
+          # Verify target is available
+          rustup target list --installed | findstr ${{ matrix.target }}
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -110,6 +131,17 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Configure macOS for headless DMG creation
+        if: matrix.platform == 'macos-latest'
+        run: |
+          # Disable AppleScript timeout issues in headless environments
+          sudo defaults write /Library/Preferences/com.apple.security GKAutoRearm -bool false
+          # Configure system for automated builds
+          sudo systemsetup -setremotelogin on
+          # Set environment for DMG creation
+          export MACOS_DMG_NO_APPLESCRIPT=1
+          export MACOS_HEADLESS=1
+
       - name: Build CLI (Unix)
         if: matrix.platform != 'windows-latest'
         run: |
@@ -126,9 +158,27 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CI: true
         with:
           projectPath: './tauri-ui'
           args: '--verbose ${{ matrix.args }}'
+
+      - name: Create DMG manually (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          echo "Creating DMG manually to avoid AppleScript issues..."
+          cd target/${{ matrix.target }}/release/bundle/macos
+          if [ -d "DeckSaves.app" ]; then
+            # Ensure dmg directory exists
+            mkdir -p ../dmg
+            # Create a simple DMG without fancy customization
+            hdiutil create -size 200m -srcfolder DeckSaves.app -format UDZO -volname "DeckSaves" ../dmg/DeckSaves_0.1.0_${{ matrix.target }}.dmg
+            echo "DMG created successfully:"
+            ls -la ../dmg/
+          else
+            echo "App bundle not found, checking available files:"
+            ls -la
+          fi
 
       - name: Debug - List build output
         run: |

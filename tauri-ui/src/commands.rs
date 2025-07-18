@@ -5,6 +5,7 @@ use decksaves_core::{
     GameConfig, 
     SyncConfig,
     watcher::WatcherManager,
+    steam::{SteamDetector, SteamGame},
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -721,4 +722,112 @@ pub async fn set_aws_credentials_and_config(
     
     println!("DEBUG: Config saved successfully");
     Ok("Configuration and AWS credentials saved securely".to_string())
+}
+
+#[command]
+pub async fn detect_steam_games() -> Result<Vec<SteamGame>, String> {
+    info!("Starting Steam game detection");
+    debug!("detect_steam_games command called");
+    
+    let mut detector = SteamDetector::new().map_err(|e| {
+        error!("Failed to create Steam detector: {}", e);
+        debug!("Steam detector creation failed with error: {:?}", e);
+        e.to_string()
+    })?;
+    
+    debug!("Steam detector created successfully");
+    
+    let games = detector.discover_games().await.map_err(|e| {
+        error!("Failed to discover Steam games: {}", e);
+        debug!("Steam game discovery failed with error: {:?}", e);
+        e.to_string()
+    })?;
+    
+    info!("Found {} Steam games", games.len());
+    debug!("Steam games discovered: {:?}", games);
+    Ok(games)
+}
+
+#[command]
+pub async fn test_steam_detection() -> Result<String, String> {
+    debug!("Testing Steam detection manually");
+    
+    match SteamDetector::new() {
+        Ok(mut detector) => {
+            debug!("Steam detector created successfully");
+            match detector.discover_games().await {
+                Ok(games) => {
+                    debug!("Steam games found: {}", games.len());
+                    Ok(format!("Found {} Steam games: {:?}", games.len(), games.iter().take(3).map(|g| &g.name).collect::<Vec<_>>()))
+                }
+                Err(e) => {
+                    debug!("Failed to discover games: {:?}", e);
+                    Err(format!("Failed to discover games: {}", e))
+                }
+            }
+        }
+        Err(e) => {
+            debug!("Failed to create Steam detector: {:?}", e);
+            Err(format!("Failed to create Steam detector: {}", e))
+        }
+    }
+}
+
+#[command]
+pub async fn get_steam_save_suggestions(steam_game: SteamGame) -> Result<Vec<String>, String> {
+    info!("Getting save path suggestions for game: {}", steam_game.name);
+    
+    let detector = SteamDetector::new().map_err(|e| {
+        error!("Failed to create Steam detector: {}", e);
+        e.to_string()
+    })?;
+    
+    let save_paths = detector.get_common_save_paths(&steam_game);
+    
+    // Filter to existing paths
+    let existing_paths: Vec<String> = save_paths.into_iter()
+        .filter(|path| {
+            let path_buf = std::path::PathBuf::from(path);
+            let exists = path_buf.exists();
+            if exists {
+                debug!("Found existing save path: {}", path);
+            }
+            exists
+        })
+        .collect();
+    
+    info!("Found {} existing save paths for {}", existing_paths.len(), steam_game.name);
+    Ok(existing_paths)
+}
+
+#[command]
+pub async fn add_steam_game_to_config(
+    steam_game: SteamGame,
+    save_paths: Vec<String>,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    info!("Adding Steam game to config: {}", steam_game.name);
+    
+    let mut config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    let game_config = GameConfig {
+        name: steam_game.name.clone(),
+        save_paths: save_paths.clone(),
+        sync_enabled: true,
+    };
+    
+    // Use app_id as the key for Steam games
+    let game_key = format!("steam_{}", steam_game.app_id);
+    config.games.insert(game_key, game_config);
+    
+    state.config_manager.save_config(&config).await.map_err(|e| {
+        error!("Failed to save config: {}", e);
+        e.to_string()
+    })?;
+    
+    info!("Successfully added Steam game: {}", steam_game.name);
+    Ok(format!("Added {} with {} save paths", steam_game.name, save_paths.len()))
 }

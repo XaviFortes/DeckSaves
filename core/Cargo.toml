@@ -22,6 +22,12 @@ toml = "0.8"
 aes-gcm = "0.10"
 base64 = "0.21"
 rand = "0.8"
+regex = "1.0"
+glob = "0.3"
+dirs = "5.0"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.51"
 
 # Platform-specific dependencies
 [target.'cfg(unix)'.dependencies]

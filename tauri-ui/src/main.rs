@@ -72,6 +72,10 @@ async fn main() {
             commands::install_service,
             commands::get_system_info,
             commands::show_notification,
+            commands::detect_steam_games,
+            commands::get_steam_save_suggestions,
+            commands::add_steam_game_to_config,
+            commands::test_steam_detection,
         ])
         .setup(|app| {
             // Setup tray icon

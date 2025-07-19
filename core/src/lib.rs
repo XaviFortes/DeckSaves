@@ -17,6 +17,7 @@ pub mod sync;
 pub mod watcher;
 pub mod daemon;
 pub mod crypto;
+pub mod steam;
 
 use crypto::CredentialCrypto;
 

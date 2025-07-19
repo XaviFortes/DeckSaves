@@ -3,11 +3,8 @@ import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
-import type { Game, GameConfig } from '../types'
-
-interface Props {
-  games: Game[]
-}
+import type { Game } from '../types'
+import SteamDiscovery from './SteamDiscovery.vue'
 
 interface Emits {
   (e: 'game-added', game: Game): void
@@ -16,9 +13,9 @@ interface Emits {
   (e: 'refresh-games'): void
 }
 
-const props = defineProps<Props>()
 const emit = defineEmits<Emits>()
 
+const games = ref<Game[]>([])
 const showAddForm = ref(false)
 const showEditForm = ref(false)
 const editingGame = ref<Game | null>(null)
@@ -93,6 +90,20 @@ const clearSyncStatus = (gameId: string) => {
     delete syncStatus.value[gameId]
     persistSyncStatus()
     console.log(`Cleared sync status for ${gameId}`)
+  }
+}
+
+// Load games function
+const loadGames = async () => {
+  try {
+    loading.value = true
+    const gamesList = await invoke('get_games_with_status') as Game[]
+    games.value = gamesList
+    console.log('Loaded games:', gamesList)
+  } catch (error) {
+    console.error('Failed to load games:', error)
+  } finally {
+    loading.value = false
   }
 }
 
@@ -273,6 +284,9 @@ const syncGame = async (game: Game) => {
 
 // Setup event listeners for sync feedback
 onMounted(async () => {
+  // Load games first
+  await loadGames()
+  
   // Load persisted sync status
   loadPersistedSyncStatus()
   
@@ -351,6 +365,11 @@ onUnmounted(() => {
   if (syncErrorUnlisten) syncErrorUnlisten()
 })
 
+const onSteamGamesAdded = (count: number) => {
+  emit('refresh-games')
+  console.log(`Added ${count} Steam games`)
+}
+
 const toggleWatching = async (game: Game) => {
   try {
     if (game.is_watching) {
@@ -391,16 +410,84 @@ const toggleWatching = async (game: Game) => {
       </div>
     </div>
 
-    <div v-if="games.length === 0" class="empty-state">
-      <p>No games added yet. Click "Add Game" to get started!</p>
+    <!-- Add Games Section -->
+    <div v-if="games.length === 0" class="add-games-section">
+      <div class="add-games-header">
+        <h3>Add Your Games</h3>
+        <p>Get started by adding games manually or discover them automatically from your game platforms</p>
+      </div>
+      
+      <div class="add-methods">
+        <!-- Manual Addition -->
+        <div class="add-method">
+          <div class="add-method-header">
+            <h4>📁 Manual Setup</h4>
+            <p>Add games by manually specifying save file paths</p>
+          </div>
+          <button 
+            class="btn btn-primary btn-large"
+            @click="showAddForm = true"
+          >
+            Add Game Manually
+          </button>
+        </div>
+
+        <!-- Steam Discovery -->
+        <div class="add-method">
+          <div class="add-method-header">
+            <h4>🎮 Steam Discovery</h4>
+            <p>Automatically detect games from your Steam library</p>
+          </div>
+          <SteamDiscovery @games-added="onSteamGamesAdded" />
+        </div>
+
+        <!-- Future Platforms -->
+        <div class="add-method disabled">
+          <div class="add-method-header">
+            <h4>🛒 Epic Games</h4>
+            <p>Coming soon - Auto-detect Epic Games Store games</p>
+          </div>
+          <button class="btn btn-secondary btn-large" disabled>
+            Coming Soon
+          </button>
+        </div>
+
+        <div class="add-method disabled">
+          <div class="add-method-header">
+            <h4>🌟 GOG Galaxy</h4>
+            <p>Coming soon - Auto-detect GOG games</p>
+          </div>
+          <button class="btn btn-secondary btn-large" disabled>
+            Coming Soon
+          </button>
+        </div>
+      </div>
     </div>
-    
-    <div v-else class="games-grid">
-      <div
-        v-for="game in games"
-        :key="game.id"
-        class="game-card"
-      >
+
+    <!-- Existing Games List -->
+    <div v-if="games.length > 0" class="games-section">
+      <div class="games-header">
+        <h3>Your Games ({{ games.length }})</h3>
+        <div class="games-actions">
+          <button 
+            class="btn btn-secondary"
+            @click="showAddForm = true"
+          >
+            📁 Add Manually
+          </button>
+          <!-- Steam Discovery Inline -->
+          <div class="inline-steam-discovery">
+            <SteamDiscovery @games-added="onSteamGamesAdded" :compact="true" />
+          </div>
+        </div>
+      </div>
+      
+      <div class="games-grid">
+        <div
+          v-for="game in games"
+          :key="game.id"
+          class="game-card"
+        >
         <div class="game-card-header">
           <h3>{{ game.name }}</h3>
           <div class="game-card-actions">
@@ -479,6 +566,45 @@ const toggleWatching = async (game: Game) => {
     </div>
 
     <!-- Add Game Form -->
+    <div v-if="activeTab === 'steam'" style="background: orange; color: black; padding: 40px; margin: 30px 0; border: 10px solid blue; font-size: 24px; font-weight: bold;">
+      <h1>� BIG ORANGE STEAM TEST �</h1>
+      <p>This should be VERY visible on Steam tab!</p>
+      <p>activeTab = "{{ activeTab }}"</p>
+      <button style="padding: 20px; background: red; color: white; font-size: 20px;">BIG TEST BUTTON</button>
+    </div>
+
+    <!-- Steam Discovery Tab -->
+    <div v-if="showSteamTab">
+      <p style="background: yellow; padding: 10px;">DEBUG: Steam tab is active (activeTab = {{ activeTab }}, showSteamTab = {{ showSteamTab }})</p>
+      <SteamDiscovery @games-added="onSteamGamesAdded" />
+    </div>
+    
+    <!-- DEBUG: Always show this to debug -->
+    <div style="background: orange; padding: 10px; margin: 10px 0;">
+      DEBUG INFO: activeTab = "{{ activeTab }}", showSteamTab = {{ showSteamTab }}, showManualTab = {{ showManualTab }}
+    </div>
+    
+    <!-- DEBUG: Force show SteamDiscovery to test component -->
+    <div style="background: red; padding: 10px; margin: 10px 0; border: 3px solid black;">
+      <p style="background: white; color: black; padding: 5px;">DEBUG: ALWAYS showing SteamDiscovery component for testing</p>
+      <p style="background: white; color: black; padding: 5px;">activeTab = "{{ activeTab }}"</p>
+      <p style="background: white; color: black; padding: 5px;">About to render SteamDiscovery component...</p>
+      <div style="border: 2px solid blue; padding: 10px;">
+        <!-- <SteamDiscovery @games-added="onSteamGamesAdded" /> -->
+        <p>SteamDiscovery component temporarily disabled for debugging</p>
+      </div>
+      <p style="background: white; color: black; padding: 5px;">SteamDiscovery component rendered above</p>
+    </div>
+
+    <!-- DEBUG: Test simple conditional rendering -->
+    <div v-show="activeTab === 'steam'" style="background: green; padding: 20px; margin: 10px 0; border: 3px solid purple;">
+      <h2>🎮 STEAM TAB CONTENT TEST</h2>
+      <p>This should ONLY show when on Steam tab</p>
+      <p>activeTab value: {{ activeTab }}</p>
+      <button style="padding: 10px; background: blue; color: white;">Test Button</button>
+    </div>
+
+    <!-- Add Game Form -->
     <div v-if="showAddForm" class="modal-overlay">
       <div class="modal">
         <div class="modal-header">
@@ -501,7 +627,7 @@ const toggleWatching = async (game: Game) => {
 
             <div class="form-group">
               <label>Save File Paths</label>
-              <div v-for="(path, index) in newGame.save_paths" :key="index" class="path-input-group">
+              <div v-for="(_, index) in newGame.save_paths" :key="index" class="path-input-group">
                 <input
                   v-model="newGame.save_paths[index]"
                   type="text"
@@ -577,7 +703,7 @@ const toggleWatching = async (game: Game) => {
 
             <div class="form-group">
               <label>Save File Paths</label>
-              <div v-for="(path, index) in newGame.save_paths" :key="index" class="path-input-group">
+              <div v-for="(_, index) in newGame.save_paths" :key="index" class="path-input-group">
                 <input
                   v-model="newGame.save_paths[index]"
                   type="text"
@@ -630,6 +756,7 @@ const toggleWatching = async (game: Game) => {
       </div>
     </div>
   </div>
+</div>
 </template>
 
 <style scoped>
@@ -649,6 +776,81 @@ const toggleWatching = async (game: Game) => {
   font-size: 1.5rem;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.game-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1.5rem;
+  border-bottom: 2px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  border-radius: var(--border-radius) var(--border-radius) 0 0;
+  overflow: hidden;
+}
+
+.tab-button {
+  padding: 0.875rem 1.5rem;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: 500;
+  font-size: 0.9rem;
+  position: relative;
+  flex: 1;
+  text-align: center;
+}
+
+.tab-button:hover {
+  background-color: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tab-button.active {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  box-shadow: 0 -2px 0 0 var(--accent-color);
+}
+
+.tab-button.active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background-color: var(--accent-color);
+}
+
+/* Enhanced empty states */
+.empty-state {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--text-muted);
+}
+
+.empty-state h3 {
+  margin: 0 0 0.75rem 0;
+  font-size: 1.25rem;
+  color: var(--text-secondary);
+}
+
+.empty-state p {
+  font-size: 1rem;
+  line-height: 1.5;
+  margin-bottom: 1.5rem;
+}
+
+.empty-state .btn {
+  margin-top: 0.5rem;
+}
+
+/* Gaming-themed styling */
+.steam-tab .empty-state {
+  background: linear-gradient(135deg, rgba(23, 26, 33, 0.05), rgba(102, 192, 244, 0.05));
+  border-radius: var(--border-radius);
+  border: 1px dashed var(--border-color);
 }
 
 .games-grid {

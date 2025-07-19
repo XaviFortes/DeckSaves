@@ -5,6 +5,20 @@ export interface Game {
   sync_enabled: boolean
   last_sync: string | null
   is_watching: boolean
+  platform?: 'steam' | 'epic' | 'gog' | 'manual'
+  app_id?: string
+  install_dir?: string
+  size_on_disk?: number
+  last_updated?: number
+}
+
+export interface SteamGame {
+  app_id: string
+  name: string
+  install_dir: string
+  library_path: string
+  last_updated?: number
+  size_on_disk?: number
 }
 
 export interface GameConfig {

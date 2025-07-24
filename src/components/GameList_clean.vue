@@ -402,7 +402,7 @@ const toggleWatching = async (game: Game) => {
         <h3>🔧 DEBUG TEST AREA</h3>
         <button 
           style="background: lime; color: black; padding: 15px; font-size: 18px; border: 2px solid black;"
-          @click="() => { console.log('TEST BUTTON WORKS!'); console.log('Test button clicked'); }"
+          @click="() => { alert('TEST BUTTON WORKS!'); console.log('Test button clicked'); }"
         >
           🔧 TEST BUTTON - CLICK ME
         </button>
@@ -726,7 +726,6 @@ const toggleWatching = async (game: Game) => {
       </div>
     </div>
   </div>
-</div>
 </template>
 
 <style scoped>

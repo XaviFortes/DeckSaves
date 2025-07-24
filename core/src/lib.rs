@@ -29,6 +29,7 @@ pub struct GameConfig {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct FileInfo {
     pub path: String,
     pub modified_time: SystemTime,
@@ -485,6 +486,7 @@ impl GameSaveSync {
         }
     }
     
+    #[allow(dead_code)]
     async fn compare_file_hashes(&self, local_path: &str, cloud_hash: &str) -> Result<bool> {
         debug!("Performing hash comparison for: {}", local_path);
         
@@ -618,6 +620,7 @@ impl GameSaveSync {
         }
     }
 
+    #[allow(dead_code)]
     fn calculate_hash(&self, data: &[u8]) -> String {
         let mut hasher = Sha256::new();
         hasher.update(data);

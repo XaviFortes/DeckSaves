@@ -169,18 +169,36 @@ pub async fn add_game(
     enabled: bool,
     state: State<'_, AppState>
 ) -> Result<String, String> {
-    let mut config = state.config_manager.load_config().await.map_err(|e| e.to_string())?;
+    info!("add_game command called with name='{}', display_name='{}', paths={:?}, enabled={}", 
+          name, display_name, paths, enabled);
     
+    debug!("Loading configuration...");
+    let mut config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    debug!("Configuration loaded successfully");
+    
+    debug!("Creating game config...");
     let game_config = GameConfig {
-        name: display_name,
-        save_paths: paths,
+        name: display_name.clone(),
+        save_paths: paths.clone(),
         sync_enabled: enabled,
     };
+    debug!("Game config created: {:?}", game_config);
     
+    debug!("Inserting game '{}' into config...", name);
     config.games.insert(name.clone(), game_config);
-    state.config_manager.save_config(&config).await.map_err(|e| e.to_string())?;
+    debug!("Game inserted. Total games in config: {}", config.games.len());
     
-    info!("Added game: {}", name);
+    debug!("Saving configuration...");
+    state.config_manager.save_config(&config).await.map_err(|e| {
+        error!("Failed to save config: {}", e);
+        e.to_string()
+    })?;
+    debug!("Configuration saved successfully");
+    
+    info!("Successfully added game: {}", name);
     Ok(format!("Game '{}' added successfully", name))
 }
 

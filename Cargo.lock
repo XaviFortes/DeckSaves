@@ -1236,10 +1236,12 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "async-trait",
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
  "base64 0.21.7",
+ "chrono",
  "directories",
  "dirs 5.0.1",
  "futures-util",
@@ -1251,6 +1253,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shellexpand",
  "signal-hook",
  "signal-hook-tokio",
  "tokio",
@@ -5105,6 +5108,15 @@ dependencies = [
  "libc",
  "sigchld",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "shellexpand"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b1fdf65dd6331831494dd616b30351c38e96e45921a27745cf98490458b90bb"
+dependencies = [
+ "dirs 6.0.0",
 ]
 
 [[package]]

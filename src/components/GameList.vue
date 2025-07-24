@@ -397,24 +397,6 @@ const toggleWatching = async (game: Game) => {
     <div class="game-list-header">
       <h2>Game Save Files</h2>
       
-      <!-- SIMPLE DEBUG AREA -->
-      <div style="background: yellow; padding: 20px; margin: 10px; border: 3px solid red;">
-        <h3>🔧 DEBUG TEST AREA</h3>
-        <button 
-          style="background: lime; color: black; padding: 15px; font-size: 18px; border: 2px solid black;"
-          @click="() => { console.log('TEST BUTTON WORKS!'); console.log('Test button clicked'); }"
-        >
-          🔧 TEST BUTTON - CLICK ME
-        </button>
-        <p>showAddForm value: {{ showAddForm }}</p>
-        <button 
-          style="background: orange; color: black; padding: 15px; font-size: 18px; border: 2px solid black; margin-left: 10px;"
-          @click="() => { console.log('Setting showAddForm to true'); showAddForm = true; console.log('showAddForm is now:', showAddForm); }"
-        >
-          🎯 FORCE MODAL OPEN
-        </button>
-      </div>
-      
       <div class="header-actions">
         <button 
           v-if="Object.keys(syncStatus).length > 0"
@@ -567,88 +549,83 @@ const toggleWatching = async (game: Game) => {
         </div>
       </div>
     </div>
+  </div>
 
-    <!-- MODAL DEBUG INFO -->
-    <div style="background: purple; color: white; padding: 20px; margin: 10px; font-size: 18px;">
-      🔍 MODAL DEBUG: showAddForm = {{ showAddForm }}
-      <br>Should show modal: {{ showAddForm ? 'YES' : 'NO' }}
-    </div>
-    
-    <!-- Add Game Modal -->
-    <div v-if="showAddForm" class="modal-overlay" style="background: rgba(255,0,0,0.8) !important; z-index: 99999 !important; position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;">
-      <div class="modal" style="background: yellow !important; border: 10px solid red !important; padding: 20px !important; margin: auto !important; position: relative !important; top: 50% !important; transform: translateY(-50%) !important; width: 80% !important; max-width: 500px !important;">
-        <div class="modal-header" style="background: blue !important; color: white !important; padding: 20px !important;">
-          <h3 style="color: white !important; font-size: 24px !important;">🎮 Add New Game 🎮</h3>
-          <button @click="() => { console.log('Close button clicked'); showAddForm = false; }" class="close-btn" style="background: red !important; color: white !important; font-size: 30px !important; padding: 10px !important;">×</button>
-        </div>
-        <div class="modal-content">
-          <form @submit.prevent="addGame">
-            <div class="form-group">
-              <label for="game-name">Game Name</label>
+  <!-- Add Game Modal - MOVED OUTSIDE MAIN CONTAINER -->
+  <div v-if="showAddForm" class="modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>🎮 Add New Game</h3>
+        <button @click="() => { console.log('Close button clicked'); showAddForm = false; }" class="close-btn">×</button>
+      </div>
+      <div class="modal-content">
+        <form @submit.prevent="addGame">
+          <div class="form-group">
+            <label for="game-name">Game Name</label>
+            <input
+              id="game-name"
+              v-model="newGame.name"
+              type="text"
+              class="form-input"
+              placeholder="Enter game name"
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label>Save File Paths</label>
+            <div v-for="(_, index) in newGame.save_paths" :key="index" class="path-input-group">
               <input
-                id="game-name"
-                v-model="newGame.name"
+                v-model="newGame.save_paths[index]"
                 type="text"
                 class="form-input"
-                placeholder="Enter game name"
-                required
+                placeholder="Enter save file path"
               />
-            </div>
-
-            <div class="form-group">
-              <label>Save File Paths</label>
-              <div v-for="(_, index) in newGame.save_paths" :key="index" class="path-input-group">
-                <input
-                  v-model="newGame.save_paths[index]"
-                  type="text"
-                  class="form-input"
-                  placeholder="Enter save file path"
-                />
-                <button 
-                  type="button"
-                  class="btn btn-small"
-                  @click="selectFolder(index)"
-                >
-                  Browse
-                </button>
-                <button 
-                  v-if="newGame.save_paths.length > 1"
-                  type="button"
-                  class="btn btn-small btn-danger"
-                  @click="removePath(index)"
-                >
-                  Remove
-                </button>
-              </div>
               <button 
                 type="button"
-                class="btn btn-small btn-secondary"
-                @click="addPath"
+                class="btn btn-small"
+                @click="selectFolder(index)"
               >
-                Add Another Path
+                Browse
+              </button>
+              <button 
+                v-if="newGame.save_paths.length > 1"
+                type="button"
+                class="btn btn-small btn-danger"
+                @click="removePath(index)"
+              >
+                Remove
               </button>
             </div>
+            <button 
+              type="button"
+              class="btn btn-small btn-secondary"
+              @click="addPath"
+            >
+              Add Another Path
+            </button>
+          </div>
 
-            <div class="form-group">
-              <label class="checkbox-label">
-                <input
-                  v-model="newGame.sync_enabled"
-                  type="checkbox"
-                />
-                Enable sync for this game
-              </label>
-            </div>
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input
+                v-model="newGame.sync_enabled"
+                type="checkbox"
+              />
+              Enable sync for this game
+            </label>
+          </div>
 
-            <div class="form-actions">
-              <button type="button" @click="showAddForm = false" class="btn">Cancel</button>
-              <button type="submit" class="btn btn-primary" :disabled="loading">
-                {{ loading ? 'Adding...' : 'Add Game' }}
-              </button>
-            </div>
-          </form>
-        </div>
+          <div class="form-actions">
+            <button type="button" @click="showAddForm = false" class="btn">Cancel</button>
+            <button type="submit" class="btn btn-primary" :disabled="loading">
+              {{ loading ? 'Adding...' : 'Add Game' }}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
+  </div>
 
     <!-- Edit Game Modal -->
     <div v-if="showEditForm" class="modal-overlay">
@@ -726,7 +703,6 @@ const toggleWatching = async (game: Game) => {
       </div>
     </div>
   </div>
-</div>
 </template>
 
 <style scoped>
@@ -918,15 +894,17 @@ const toggleWatching = async (game: Game) => {
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.5);
+  background-color: rgba(0, 0, 0, 0.75);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  backdrop-filter: blur(4px);
 }
 
 .modal {
   background-color: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: var(--border-radius);
   box-shadow: var(--shadow-lg);
   width: 90%;
@@ -941,11 +919,14 @@ const toggleWatching = async (game: Game) => {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  background-color: var(--bg-secondary);
 }
 
 .modal-header h3 {
   font-size: 1.125rem;
   font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
 }
 
 .close-btn {

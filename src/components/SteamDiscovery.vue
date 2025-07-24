@@ -1,10 +1,10 @@
 <template>
   <div class="steam-discovery" :class="{ compact }">
     <!-- Full mode header -->
-    <div v-if="!compact" class="discovery-header">
+    <!-- <div v-if="!compact" class="discovery-header">
       <h2>🎮 Discover Steam Games</h2>
       <p>Automatically detect your Steam games and add them to DeckSaves</p>
-    </div>
+    </div> -->
 
     <div class="discovery-actions" :class="{ compact }">
       <button 

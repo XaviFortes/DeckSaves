@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use uuid::Uuid;
 use tracing::{info, error, debug};
+use chrono::Utc;
 use chrono;
 
 // Application state
@@ -200,6 +201,88 @@ pub async fn add_game(
     
     info!("Successfully added game: {}", name);
     Ok(format!("Game '{}' added successfully", name))
+}
+
+#[command]
+pub async fn add_game_with_dialogs(
+    app: AppHandle,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    info!("Starting add_game_with_dialogs workflow");
+    
+    // Import the dialog methods
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    
+    // Get game name - for now use a default since text input dialogs need more setup
+    let game_name = format!("Manual Game {}", Utc::now().timestamp());
+    let display_name = game_name.clone();
+    
+    // Show info message about what we're going to do
+    let should_continue = app.dialog()
+        .message(&format!("Adding game: '{}'\n\nNext, select the folder(s) containing save files for this game.", display_name))
+        .title("Add Game")
+        .kind(MessageDialogKind::Info)
+        .blocking_show();
+    
+    if !should_continue {
+        return Err("User cancelled game addition".to_string());
+    }
+    
+    // Get save paths using folder dialog
+    let (tx, rx) = std::sync::mpsc::channel();
+    
+    app.dialog()
+        .file()
+        .pick_folders(move |result| {
+            let _ = tx.send(result);
+        });
+    
+    let save_paths = match rx.recv() {
+        Ok(Some(paths)) => {
+            paths.into_iter().filter_map(|p| p.into_path().ok()).map(|path| path.to_string_lossy().to_string()).collect::<Vec<_>>()
+        },
+        Ok(None) => return Err("No save paths selected".to_string()),
+        Err(_) => return Err("Failed to receive dialog result".to_string()),
+    };
+    
+    if save_paths.is_empty() {
+        return Err("At least one save path is required".to_string());
+    }
+    
+    // For now, enable sync by default
+    let enabled = true;
+    
+    info!("Collected game info: name='{}', display_name='{}', paths={:?}, enabled={}", 
+          game_name, display_name, save_paths, enabled);
+    
+    // Use the existing add_game logic
+    let mut config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    let game_config = GameConfig {
+        name: display_name.clone(),
+        save_paths: save_paths.clone(),
+        sync_enabled: enabled,
+    };
+    
+    config.games.insert(game_name.clone(), game_config);
+    
+    state.config_manager.save_config(&config).await.map_err(|e| {
+        error!("Failed to save config: {}", e);
+        e.to_string()
+    })?;
+    
+    // Show success message
+    app.dialog()
+        .message(&format!("Successfully added game: '{}'\nSave paths: {}", display_name, save_paths.join(", ")))
+        .title("Game Added")
+        .kind(MessageDialogKind::Info)
+        .blocking_show();
+    
+    info!("Successfully added game via dialogs: {}", game_name);
+    Ok(format!("Game '{}' added successfully with {} save paths", game_name, save_paths.len()))
 }
 
 #[command]

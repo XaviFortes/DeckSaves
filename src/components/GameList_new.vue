@@ -104,7 +104,7 @@ const addGame = async () => {
     loading.value = true
     await invoke('add_game', { 
       name: newGame.value.name,
-      display_name: newGame.value.name,
+      displayName: newGame.value.name,
       paths: newGame.value.save_paths.filter(path => path.trim() !== ''),
       enabled: newGame.value.sync_enabled
     })

@@ -96,7 +96,7 @@ impl SteamDetector {
     }
 
     #[cfg(not(windows))]
-    fn get_steam_path_from_registry() -> Result<PathBuf> {
+    fn _get_steam_path_from_registry() -> Result<PathBuf> {
         Err(anyhow::anyhow!("Registry access not available on this platform"))
     }
 
@@ -161,7 +161,7 @@ impl SteamDetector {
         
         // Simple VDF parser - Steam's VDF format is key-value pairs
         let path_regex = Regex::new(r#""path"\s+"([^"]+)""#).unwrap();
-        let label_regex = Regex::new(r#""label"\s+"([^"]+)""#).unwrap();
+        let _label_regex = Regex::new(r#""label"\s+"([^"]+)""#).unwrap();
         
         for line in content.lines() {
             if let Some(captures) = path_regex.captures(line) {

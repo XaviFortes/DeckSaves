@@ -18,18 +18,38 @@ onMounted(async () => {
 })
 
 const loadInitialData = async () => {
+  console.log('Starting to load initial data...')
   try {
-    const [gamesData, configData] = await Promise.all([
-      invoke<Game[]>('get_games_with_status'),
-      invoke<Config>('get_config')
-    ])
+    console.log('Attempting to call Tauri commands...')
+    
+    // Load games with error handling
+    let gamesData: Game[] = []
+    try {
+      gamesData = await invoke<Game[]>('get_games_with_status')
+      console.log('Games loaded successfully:', gamesData)
+    } catch (error) {
+      console.error('Failed to load games:', error)
+      // Continue with empty games array
+    }
+    
+    // Load config with error handling
+    let configData: Config | null = null
+    try {
+      configData = await invoke<Config>('get_config')
+      console.log('Config loaded successfully:', configData)
+    } catch (error) {
+      console.error('Failed to load config:', error)
+      // Continue with null config
+    }
     
     games.value = gamesData
     config.value = configData
+    console.log('Initial data loading completed')
   } catch (error) {
-    console.error('Failed to load initial data:', error)
+    console.error('Critical error in loadInitialData:', error)
   } finally {
     loading.value = false
+    console.log('Loading state set to false')
   }
 }
 

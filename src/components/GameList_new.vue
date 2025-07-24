@@ -103,10 +103,10 @@ const addGame = async () => {
   try {
     loading.value = true
     await invoke('add_game', { 
-      game: {
-        ...newGame.value,
-        save_paths: newGame.value.save_paths.filter(path => path.trim() !== '')
-      }
+      name: newGame.value.name,
+      display_name: newGame.value.name,
+      paths: newGame.value.save_paths.filter(path => path.trim() !== ''),
+      enabled: newGame.value.sync_enabled
     })
     
     newGame.value = {
@@ -133,7 +133,7 @@ const removeGame = async (game: Game) => {
   
   try {
     loading.value = true
-    await invoke('remove_game', { gameName: game.id })
+    await invoke('remove_game', { name: game.id })
     await refreshGames()
     emit('game-removed', game.id)
     
@@ -158,10 +158,11 @@ const updateGame = async () => {
   try {
     loading.value = true
     await invoke('update_game', { 
-      gameId: editingGame.value.id,
-      game: {
-        ...editingGame.value,
-        save_paths: editingGame.value.save_paths.filter(path => path.trim() !== '')
+      name: editingGame.value.id,
+      game_config: {
+        name: editingGame.value.name,
+        save_paths: editingGame.value.save_paths.filter(path => path.trim() !== ''),
+        sync_enabled: editingGame.value.sync_enabled
       }
     })
     

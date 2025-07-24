@@ -60,6 +60,7 @@ async fn main() {
             commands::get_games,
             commands::get_games_with_status,
             commands::add_game,
+            commands::add_game_with_dialogs,
             commands::update_game,
             commands::remove_game,
             commands::sync_game,

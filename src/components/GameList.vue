@@ -5,6 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import type { Game } from '../types'
 import SteamDiscovery from './SteamDiscovery.vue'
+import VersionHistory from './VersionHistory.vue'
 
 interface Emits {
   (e: 'game-added', game: Game): void
@@ -21,6 +22,9 @@ const showEditForm = ref(false)
 const editingGame = ref<Game | null>(null)
 const loading = ref(false)
 const syncStatus = ref<Record<string, { status: string; loading: boolean; error?: string; timestamp?: number }>>({})
+const showVersionHistory = ref(false)
+const versionHistoryGame = ref<Game | null>(null)
+const versionHistoryFilePath = ref('')
 const newGame = ref({
   name: '',
   save_paths: [''],
@@ -287,6 +291,49 @@ const syncGame = async (game: Game) => {
   }
 }
 
+const syncGameWithVersioning = async (game: Game) => {
+  try {
+    // Set loading state with timestamp
+    updateSyncStatus(game.id, 'Starting versioned sync...', true)
+    
+    console.log(`Starting versioned sync for game: ${game.id}`)
+    await invoke('sync_game_with_versioning', { gameName: game.id })
+    console.log(`Versioned sync command sent for game: ${game.id}`)
+    updateSyncStatus(game.id, 'Versioned sync completed', false)
+  } catch (error) {
+    console.error('Failed to sync game with versioning:', error)
+    updateSyncStatus(game.id, 'Versioned sync failed', false, error as string)
+    // Clear error after 5 seconds
+    setTimeout(() => {
+      if (syncStatus.value[game.id]?.error) {
+        delete syncStatus.value[game.id]
+        persistSyncStatus()
+      }
+    }, 5000)
+  }
+}
+
+const showVersionHistoryModal = (game: Game) => {
+  // For now, show history for the first save path
+  // TODO: Allow user to select which save path to view
+  if (game.save_paths.length > 0) {
+    versionHistoryGame.value = game
+    versionHistoryFilePath.value = game.save_paths[0]
+    showVersionHistory.value = true
+  }
+}
+
+const closeVersionHistory = () => {
+  showVersionHistory.value = false
+  versionHistoryGame.value = null
+  versionHistoryFilePath.value = ''
+}
+
+const onVersionRestored = () => {
+  // Optionally refresh game status or show notification
+  console.log('Version restored successfully')
+}
+
 // Setup event listeners for sync feedback
 onMounted(async () => {
   // Load games first
@@ -523,6 +570,27 @@ const toggleWatching = async (game: Game) => {
           >
             {{ syncStatus[game.id]?.loading ? 'Syncing...' : 'Sync Now' }}
           </button>
+
+          <!-- Versioning Buttons -->
+          <div class="versioning-controls">
+            <button 
+              class="btn btn-secondary"
+              @click="syncGameWithVersioning(game)"
+              :disabled="loading || syncStatus[game.id]?.loading"
+              title="Sync with version history"
+            >
+              🕒 Versioned Sync
+            </button>
+            
+            <button 
+              class="btn btn-outline"
+              @click="showVersionHistoryModal(game)"
+              :disabled="loading"
+              title="View version history and restore previous versions"
+            >
+              📋 History
+            </button>
+          </div>
           
           <!-- Sync Status Display -->
           <div v-if="syncStatus[game.id]" class="sync-status" :class="{
@@ -701,6 +769,18 @@ const toggleWatching = async (game: Game) => {
           </form>
         </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Version History Modal -->
+  <div v-if="showVersionHistory && versionHistoryGame" class="modal-overlay">
+    <div class="version-modal">
+      <VersionHistory
+        :game-name="versionHistoryGame.name"
+        :file-path="versionHistoryFilePath"
+        @close="closeVersionHistory"
+        @version-restored="onVersionRestored"
+      />
     </div>
   </div>
 </template>
@@ -1163,5 +1243,34 @@ const toggleWatching = async (game: Game) => {
 
 .inline-steam-discovery {
   display: inline-block;
+}
+
+/* Versioning Controls */
+.versioning-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.btn-outline {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: var(--bg-secondary);
+  border-color: var(--text-secondary);
+}
+
+/* Version Modal */
+.version-modal {
+  max-width: 90vw;
+  width: 900px;
+  max-height: 90vh;
+  overflow-y: auto;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
 }
 </style>

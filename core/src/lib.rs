@@ -60,6 +60,10 @@ pub struct SyncConfig {
     pub aws_secret_access_key: Option<String>,
     pub peer_sync_enabled: bool,
     pub websocket_url: Option<String>,
+    #[serde(default)]
+    pub use_local_storage: bool,
+    #[serde(default)]
+    pub local_base_path: String,
     pub games: HashMap<String, GameConfig>,
 }
 
@@ -72,6 +76,8 @@ impl Default for SyncConfig {
             aws_secret_access_key: None,
             peer_sync_enabled: false,
             websocket_url: None,
+            use_local_storage: false,
+            local_base_path: String::from("~/.decksaves"),
             games: HashMap::new(),
         }
     }
@@ -203,7 +209,30 @@ impl VersionedGameSaveSync {
         debug!("Creating VersionedGameSaveSync with bucket: {:?}", config.s3_bucket);
         
         // Create storage provider based on configuration
-        let storage_config = if let Some(bucket) = &config.s3_bucket {
+        let storage_config = if config.use_local_storage || config.s3_bucket.is_none() {
+            debug!("Setting up local storage config");
+            
+            // Use configured local path or default
+            let local_path = if config.local_base_path.is_empty() {
+                dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".decksaves")
+                    .join("local_storage")
+            } else {
+                std::path::PathBuf::from(shellexpand::tilde(&config.local_base_path).to_string())
+                    .join("local_storage")
+            };
+            
+            storage::StorageConfig {
+                backend: storage::StorageBackend::Local {
+                    base_path: local_path.to_string_lossy().to_string(),
+                },
+                connection_timeout_seconds: 30,
+                retry_attempts: 3,
+                enable_compression: true,
+                encryption_enabled: false,
+            }
+        } else if let Some(bucket) = &config.s3_bucket {
             debug!("Setting up S3 storage config");
             
             storage::StorageConfig {
@@ -217,9 +246,8 @@ impl VersionedGameSaveSync {
                 encryption_enabled: true,
             }
         } else {
-            debug!("Setting up local storage config");
+            debug!("No storage config found, defaulting to local storage");
             
-            // Default to local storage in user's home directory
             let local_path = dirs::home_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join(".decksaves")
@@ -288,19 +316,80 @@ impl VersionedGameSaveSync {
         }
 
         if path.is_dir() {
-            debug!("Path is a directory, syncing all files within: {}", file_path);
-            return self.sync_directory_with_versioning(file_path, game_name).await;
+            debug!("Path is a directory, creating directory snapshot: {}", file_path);
+            return self.sync_directory_as_single_version(file_path, game_name).await;
         }
 
-        // Sync individual file with versioning
+        // For individual files, still sync them individually (for backward compatibility)
         self.sync_single_file_with_versioning(file_path, game_name).await
     }
 
+    async fn sync_directory_as_single_version(&mut self, dir_path: &str, game_name: &str) -> Result<()> {
+        debug!("Creating single version snapshot for directory: {}", dir_path);
+        
+        let dir = Path::new(dir_path);
+        if !dir.is_dir() {
+            return Err(anyhow::anyhow!("Path is not a directory: {}", dir_path));
+        }
+
+        // Create a temporary archive of the entire directory
+        let temp_dir = std::env::temp_dir();
+        let archive_name = format!("{}_{}.tar.gz", game_name, chrono::Utc::now().timestamp());
+        let archive_path = temp_dir.join(&archive_name);
+        
+        // Create tar.gz archive of the directory
+        self.create_directory_archive(dir_path, &archive_path).await?;
+        
+        // Store the archive as a single version with the game name as the relative path
+        let relative_path = game_name.to_string();
+        
+        match self.versioned_sync.sync_file_to_storage(&archive_path, &relative_path, Some("Directory snapshot".to_string())).await {
+            Ok(_) => {
+                info!("Successfully created directory snapshot for: {}", dir_path);
+                // Clean up temporary archive
+                if archive_path.exists() {
+                    std::fs::remove_file(&archive_path).ok();
+                }
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to create directory snapshot: {}", e);
+                // Clean up temporary archive
+                if archive_path.exists() {
+                    std::fs::remove_file(&archive_path).ok();
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn create_directory_archive(&self, source_dir: &str, archive_path: &Path) -> Result<()> {
+        use std::process::Command;
+        
+        debug!("Creating archive: {} -> {}", source_dir, archive_path.display());
+        
+        // Use tar command to create the archive
+        let output = Command::new("tar")
+            .args(["-czf", &archive_path.to_string_lossy(), "-C", source_dir, "."])
+            .output()
+            .context("Failed to execute tar command")?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!("tar command failed: {}", stderr));
+        }
+        
+        debug!("Successfully created archive: {}", archive_path.display());
+        Ok(())
+    }
+
     async fn sync_single_file_with_versioning(&mut self, file_path: &str, game_name: &str) -> Result<()> {
+        println!("DEBUG sync_single_file_with_versioning: file_path='{}', game_name='{}'", file_path, game_name);
         let path = Path::new(file_path);
         let relative_path = game_name.to_string() + "/" + &path.file_name()
             .context("Invalid file path")?
             .to_string_lossy();
+        println!("DEBUG sync_single_file_with_versioning: constructed relative_path='{}'", relative_path);
         
         match self.versioned_sync.sync_file_to_storage(path, &relative_path, Some("Auto-sync".to_string())).await {
             Ok(_) => {
@@ -358,23 +447,145 @@ impl VersionedGameSaveSync {
 
     // New versioning-specific methods
     pub fn get_version_history(&self, game_name: &str, file_path: &str) -> Result<Vec<FileVersion>> {
+        println!("DEBUG get_version_history: game_name='{}', file_path='{}'", game_name, file_path);
         let path = Path::new(file_path);
-        let relative_path = game_name.to_string() + "/" + &path.file_name()
+        
+        // For directories, look for game-level versions (new approach)
+        if path.is_dir() {
+            println!("DEBUG get_version_history: path is a directory, looking for game-level versions for '{}'", game_name);
+            
+            // Try to get versions for the game name directly (directory snapshots)
+            let relative_path = game_name.to_string();
+            let versions = self.versioned_sync.list_versions(&relative_path)
+                .map(|versions| versions.clone())
+                .unwrap_or_default();
+            
+            if !versions.is_empty() {
+                println!("DEBUG get_version_history: found {} directory-level versions for game '{}'", versions.len(), game_name);
+                return Ok(versions);
+            }
+            
+            // Fallback to old approach (individual file versions) for backward compatibility
+            println!("DEBUG get_version_history: no directory-level versions found, falling back to individual file versions");
+            let all_versions = self.versioned_sync.get_all_versions_for_game(game_name)
+                .unwrap_or_default();
+            
+            println!("DEBUG get_version_history: found {} total individual file versions for game", all_versions.len());
+            return Ok(all_versions);
+        }
+        
+        // Handle individual file
+        let filename = path.file_name()
             .context("Invalid file path")?
             .to_string_lossy();
         
-        Ok(self.versioned_sync.list_versions(&relative_path)
+        // Try with the provided game name first
+        let relative_path = game_name.to_string() + "/" + &filename;
+        println!("DEBUG get_version_history: trying relative_path='{}'", relative_path);
+        let mut versions = self.versioned_sync.list_versions(&relative_path)
             .map(|versions| versions.clone())
-            .unwrap_or_default())
+            .unwrap_or_default();
+        
+        // If no versions found and game_name is not "default_game", try with "default_game" as fallback
+        if versions.is_empty() && game_name != "default_game" {
+            let fallback_path = "default_game/".to_string() + &filename;
+            println!("DEBUG get_version_history: trying fallback relative_path='{}'", fallback_path);
+            versions = self.versioned_sync.list_versions(&fallback_path)
+                .map(|versions| versions.clone())
+                .unwrap_or_default();
+        }
+        
+        println!("DEBUG get_version_history: found {} versions", versions.len());
+        Ok(versions)
     }
 
     pub async fn restore_version(&mut self, game_name: &str, file_path: &str, version_id: &str) -> Result<()> {
-        let path = Path::new(file_path);
-        let relative_path = game_name.to_string() + "/" + &path.file_name()
-            .context("Invalid file path")?
-            .to_string_lossy();
+        println!("DEBUG restore_version: game_name='{}', file_path='{}', version_id='{}'", game_name, file_path, version_id);
         
-        self.versioned_sync.download_version(&relative_path, version_id, path).await
+        // Check if we have a directory snapshot for this game
+        let relative_path = game_name.to_string();
+        
+        // Try to restore the directory snapshot
+        let temp_dir = std::env::temp_dir();
+        let archive_name = format!("restore_{}_{}.tar.gz", game_name, version_id);
+        let archive_path = temp_dir.join(&archive_name);
+        
+        match self.versioned_sync.download_version(&relative_path, version_id, &archive_path).await {
+            Ok(_) => {
+                // Extract the archive to the target directory
+                println!("DEBUG restore_version: extracting archive to: {}", file_path);
+                self.extract_directory_archive(&archive_path, file_path).await?;
+                
+                // Clean up temporary archive
+                if archive_path.exists() {
+                    std::fs::remove_file(&archive_path).ok();
+                }
+                
+                println!("DEBUG restore_version: successfully restored directory snapshot");
+                Ok(())
+            }
+            Err(_) => {
+                // Fallback to old individual file approach for backward compatibility
+                println!("DEBUG restore_version: directory snapshot not found, trying individual file approach");
+                
+                let path = Path::new(file_path);
+                if path.is_dir() {
+                    // Search through all files for this game to find which one contains this version_id
+                    let manifest = self.versioned_sync.get_version_manager().get_manifest();
+                    for (stored_file_path, file_info) in &manifest.files {
+                        // Check if this file belongs to the requested game
+                        if stored_file_path.starts_with(&format!("{}/", game_name)) {
+                            // Check if this file contains the version we're looking for
+                            for version in &file_info.versions {
+                                if version.version_id == version_id {
+                                    println!("DEBUG restore_version: found version_id '{}' in file '{}'", version_id, stored_file_path);
+                                    
+                                    // Extract the filename from the stored path (e.g., "Test/a" -> "a")
+                                    let filename = stored_file_path.split('/').last().unwrap_or("");
+                                    // Construct the full local path
+                                    let target_path = path.join(filename);
+                                    
+                                    println!("DEBUG restore_version: restoring to target_path: '{}'", target_path.display());
+                                    return self.versioned_sync.download_version(stored_file_path, version_id, &target_path).await;
+                                }
+                            }
+                        }
+                    }
+                    
+                    return Err(anyhow::anyhow!("Version {} not found in manifest for game {}", version_id, game_name));
+                }
+                
+                // Handle individual file (original logic)
+                let relative_path = game_name.to_string() + "/" + &path.file_name()
+                    .context("Invalid file path")?
+                    .to_string_lossy();
+                
+                self.versioned_sync.download_version(&relative_path, version_id, path).await
+            }
+        }
+    }
+
+    async fn extract_directory_archive(&self, archive_path: &Path, target_dir: &str) -> Result<()> {
+        use std::process::Command;
+        
+        debug!("Extracting archive: {} -> {}", archive_path.display(), target_dir);
+        
+        // Create target directory if it doesn't exist
+        std::fs::create_dir_all(target_dir).context("Failed to create target directory")?;
+        
+        // Use tar command to extract the archive
+        let output = Command::new("tar")
+            .args(["-xzf", &archive_path.to_string_lossy(), "-C", target_dir])
+            .output()
+            .context("Failed to execute tar command")?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!("tar extract command failed: {}", stderr));
+        }
+        
+        debug!("Successfully extracted archive to: {}", target_dir);
+        Ok(())
     }
 
     pub fn pin_version(&mut self, game_name: &str, file_path: &str, version_id: &str) -> Result<()> {

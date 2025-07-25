@@ -203,6 +203,36 @@ impl VersionedSync {
         self.version_manager.get_file_versions(relative_path)
     }
 
+    /// Get all versions for the current game across all files
+    pub fn get_all_versions_for_game(&self, game_name: &str) -> Option<Vec<FileVersion>> {
+        let manifest = self.version_manager.get_manifest();
+        let mut all_versions = Vec::new();
+        
+        // Iterate through all files in the manifest and collect versions only for the specified game
+        for (file_path, file_info) in &manifest.files {
+            // Filter to only include files that belong to the requested game
+            // Files are stored with format "GameName/filename" 
+            if file_path.starts_with(&format!("{}/", game_name)) {
+                println!("DEBUG get_all_versions_for_game: found file '{}' with {} versions (matches game '{}')", file_path, file_info.versions.len(), game_name);
+                for version in &file_info.versions {
+                    // Create a copy of the version with file path information
+                    let version_with_path = version.clone();
+                    // We can add the file path to the description or store it somehow
+                    // For now, the version already has the file_path in the FileInfo structure
+                    all_versions.push(version_with_path);
+                }
+            } else {
+                println!("DEBUG get_all_versions_for_game: skipping file '{}' (doesn't match game '{}')", file_path, game_name);
+            }
+        }
+        
+        // Sort versions by timestamp (newest first)
+        all_versions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        
+        println!("DEBUG get_all_versions_for_game: returning {} total versions for game '{}'", all_versions.len(), game_name);
+        Some(all_versions)
+    }
+
     /// Pin a version to prevent automatic cleanup
     pub fn pin_version(&mut self, relative_path: &str, version_id: &str) -> Result<()> {
         self.version_manager.pin_version(relative_path, version_id)

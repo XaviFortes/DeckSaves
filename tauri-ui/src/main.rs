@@ -51,6 +51,7 @@ async fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_config,
             commands::save_config,
+            commands::enable_local_storage,
             commands::set_aws_credentials,
             commands::set_aws_credentials_and_config,
             commands::get_aws_credentials,

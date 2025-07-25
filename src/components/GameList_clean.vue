@@ -155,7 +155,7 @@ const addGame = async () => {
     
     await invoke('add_game', { 
       name: newGame.value.name,
-      display_name: newGame.value.name, 
+      displayName: newGame.value.name, 
       paths: filteredPaths,
       enabled: newGame.value.sync_enabled
     })

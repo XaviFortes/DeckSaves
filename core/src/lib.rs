@@ -18,6 +18,9 @@ pub mod watcher;
 pub mod daemon;
 pub mod crypto;
 pub mod steam;
+pub mod versioning;
+pub mod storage;
+pub mod versioned_sync;
 
 use crypto::CredentialCrypto;
 

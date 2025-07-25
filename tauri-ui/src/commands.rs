@@ -2,8 +2,10 @@ use tauri::{command, State, AppHandle, Emitter};
 use decksaves_core::{
     config::ConfigManager, 
     GameSaveSync, 
+    VersionedGameSaveSync,
     GameConfig, 
     SyncConfig,
+    FileVersion,
     watcher::WatcherManager,
     steam::{SteamDetector, SteamGame},
 };
@@ -931,4 +933,154 @@ pub async fn add_steam_game_to_config(
     
     info!("Successfully added Steam game: {}", steam_game.name);
     Ok(format!("Added {} with {} save paths", steam_game.name, save_paths.len()))
+}
+
+// Versioned Sync Commands
+#[command]
+pub async fn sync_game_with_versioning(game_name: String, state: State<'_, AppState>) -> Result<String, String> {
+    info!("sync_game_with_versioning command called for: {}", game_name);
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    debug!("Config loaded for versioned sync. S3 bucket: {:?}, Region: {:?}", config.s3_bucket, config.s3_region);
+    
+    let mut sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
+        error!("Failed to create VersionedGameSaveSync: {}", e);
+        e.to_string()
+    })?;
+    
+    info!("Starting versioned sync for game: {}", game_name);
+    
+    let result = sync_handler.sync_game(&game_name).await.map_err(|e| {
+        error!("Versioned sync failed for {}: {}", game_name, e);
+        e.to_string()
+    });
+    
+    match result {
+        Ok(_) => {
+            info!("Versioned sync completed successfully for: {}", game_name);
+            
+            // Record sync timestamp
+            if let Ok(mut history) = state.sync_history.lock() {
+                let timestamp = chrono::Utc::now().to_rfc3339();
+                history.insert(game_name.clone(), timestamp);
+                debug!("Recorded versioned sync timestamp for: {}", game_name);
+            }
+            
+            Ok(format!("Successfully synced {} with versioning", game_name))
+        }
+        Err(e) => {
+            error!("Versioned sync failed: {}", e);
+            Err(e)
+        }
+    }
+}
+
+#[command]
+pub async fn get_version_history(
+    game_name: String, 
+    file_path: String, 
+    state: State<'_, AppState>
+) -> Result<Vec<FileVersion>, String> {
+    info!("get_version_history command called for: {} - {}", game_name, file_path);
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    let sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
+        error!("Failed to create VersionedGameSaveSync: {}", e);
+        e.to_string()
+    })?;
+    
+    let history = sync_handler.get_version_history(&game_name, &file_path).map_err(|e| {
+        error!("Failed to get version history: {}", e);
+        e.to_string()
+    })?;
+    
+    info!("Found {} versions for {} - {}", history.len(), game_name, file_path);
+    Ok(history)
+}
+
+#[command]
+pub async fn restore_version(
+    game_name: String,
+    file_path: String,
+    version_id: String,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    info!("restore_version command called: {} - {} -> {}", game_name, file_path, version_id);
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    let mut sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
+        error!("Failed to create VersionedGameSaveSync: {}", e);
+        e.to_string()
+    })?;
+    
+    sync_handler.restore_version(&game_name, &file_path, &version_id).await.map_err(|e| {
+        error!("Failed to restore version: {}", e);
+        e.to_string()
+    })?;
+    
+    info!("Successfully restored version {} for {} - {}", version_id, game_name, file_path);
+    Ok(format!("Restored version {} successfully", version_id))
+}
+
+#[command]
+pub async fn pin_version(
+    game_name: String,
+    file_path: String,
+    version_id: String,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    info!("pin_version command called: {} - {} -> {}", game_name, file_path, version_id);
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    let mut sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
+        error!("Failed to create VersionedGameSaveSync: {}", e);
+        e.to_string()
+    })?;
+    
+    sync_handler.pin_version(&game_name, &file_path, &version_id).map_err(|e| {
+        error!("Failed to pin version: {}", e);
+        e.to_string()
+    })?;
+    
+    info!("Successfully pinned version {} for {} - {}", version_id, game_name, file_path);
+    Ok(format!("Pinned version {} successfully", version_id))
+}
+
+#[command]
+pub async fn cleanup_old_versions(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    info!("cleanup_old_versions command called");
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    let mut sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
+        error!("Failed to create VersionedGameSaveSync: {}", e);
+        e.to_string()
+    })?;
+    
+    let cleaned_versions = sync_handler.cleanup_old_versions().await.map_err(|e| {
+        error!("Failed to cleanup old versions: {}", e);
+        e.to_string()
+    })?;
+    
+    info!("Cleaned up {} old versions", cleaned_versions.len());
+    Ok(cleaned_versions)
 }

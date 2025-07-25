@@ -77,6 +77,12 @@ async fn main() {
             commands::get_steam_save_suggestions,
             commands::add_steam_game_to_config,
             commands::test_steam_detection,
+            // Versioned sync commands
+            commands::sync_game_with_versioning,
+            commands::get_version_history,
+            commands::restore_version,
+            commands::pin_version,
+            commands::cleanup_old_versions,
         ])
         .setup(|app| {
             // Setup tray icon

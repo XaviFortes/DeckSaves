@@ -23,6 +23,9 @@ pub mod storage;
 pub mod versioned_sync;
 
 use crypto::CredentialCrypto;
+pub use versioning::{VersionManager, FileVersion, GameVersionManifest, VersionConfig};
+pub use versioned_sync::VersionedSync;
+pub use storage::providers::{StorageProvider, S3StorageProvider, LocalStorageProvider};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameConfig {
@@ -187,6 +190,225 @@ impl FileWatcher {
         self.watcher = Some(watcher);
         info!("Started watching path: {}", path);
         Ok(())
+    }
+}
+
+pub struct VersionedGameSaveSync {
+    config: SyncConfig,
+    versioned_sync: VersionedSync,
+}
+
+impl VersionedGameSaveSync {
+    pub async fn new(config: SyncConfig) -> Result<Self> {
+        debug!("Creating VersionedGameSaveSync with bucket: {:?}", config.s3_bucket);
+        
+        // Create storage provider based on configuration
+        let storage_config = if let Some(bucket) = &config.s3_bucket {
+            debug!("Setting up S3 storage config");
+            
+            storage::StorageConfig {
+                backend: storage::StorageBackend::S3 {
+                    bucket: bucket.clone(),
+                    region: config.s3_region.clone().unwrap_or_else(|| "us-east-1".to_string()),
+                },
+                connection_timeout_seconds: 30,
+                retry_attempts: 3,
+                enable_compression: true,
+                encryption_enabled: true,
+            }
+        } else {
+            debug!("Setting up local storage config");
+            
+            // Default to local storage in user's home directory
+            let local_path = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".decksaves")
+                .join("local_storage");
+            
+            storage::StorageConfig {
+                backend: storage::StorageBackend::Local {
+                    base_path: local_path.to_string_lossy().to_string(),
+                },
+                connection_timeout_seconds: 30,
+                retry_attempts: 3,
+                enable_compression: true,
+                encryption_enabled: false,
+            }
+        };
+        
+        // Create version config with sensible defaults
+        let version_config = VersionConfig {
+            max_versions_per_file: 10,
+            max_version_age_days: 30,
+            keep_pinned_versions: true,
+            auto_pin_strategy: versioning::AutoPinStrategy::Weekly,
+        };
+        
+        let versioned_sync = VersionedSync::new(
+            "default_game".to_string(), // This will be updated per game
+            storage_config,
+            version_config,
+        ).await?;
+        
+        Ok(Self { config, versioned_sync })
+    }
+
+    pub async fn sync_game(&mut self, game_name: &str) -> Result<()> {
+        debug!("versioned sync_game starting for: {}", game_name);
+        let game_config = self.config.games.get(game_name)
+            .context("Game not found in configuration")?;
+
+        if !game_config.sync_enabled {
+            info!("Sync disabled for game: {}", game_name);
+            return Ok(());
+        }
+
+        let save_paths = game_config.save_paths.clone();
+        debug!("Processing {} save paths for game: {}", save_paths.len(), game_name);
+        
+        for save_path in &save_paths {
+            debug!("Syncing save path with versioning: {}", save_path);
+            self.sync_file_with_versioning(save_path, game_name).await?;
+            debug!("Completed versioned syncing save path: {}", save_path);
+        }
+
+        debug!("versioned sync_game completed successfully for: {}", game_name);
+        Ok(())
+    }
+
+    async fn sync_file_with_versioning(&mut self, file_path: &str, game_name: &str) -> Result<()> {
+        debug!("sync_file_with_versioning called for: {} (game: {})", file_path, game_name);
+        
+        let path = Path::new(file_path);
+        
+        if !path.exists() {
+            warn!("Save path does not exist: {}", file_path);
+            // Try to download the latest version from storage
+            return self.download_latest_version_internal(file_path, game_name).await;
+        }
+
+        if path.is_dir() {
+            debug!("Path is a directory, syncing all files within: {}", file_path);
+            return self.sync_directory_with_versioning(file_path, game_name).await;
+        }
+
+        // Sync individual file with versioning
+        self.sync_single_file_with_versioning(file_path, game_name).await
+    }
+
+    async fn sync_single_file_with_versioning(&mut self, file_path: &str, game_name: &str) -> Result<()> {
+        let path = Path::new(file_path);
+        let relative_path = game_name.to_string() + "/" + &path.file_name()
+            .context("Invalid file path")?
+            .to_string_lossy();
+        
+        match self.versioned_sync.sync_file_to_storage(path, &relative_path, Some("Auto-sync".to_string())).await {
+            Ok(_) => {
+                info!("Successfully synced file with versioning: {}", file_path);
+                Ok(())
+            }
+            Err(e) => {
+                error!("Failed to sync file with versioning: {}", e);
+                Err(e)
+            }
+        }
+    }
+
+    async fn sync_directory_with_versioning(&mut self, dir_path: &str, game_name: &str) -> Result<()> {
+        debug!("Syncing directory with versioning: {}", dir_path);
+        
+        let dir = Path::new(dir_path);
+        if !dir.is_dir() {
+            return Err(anyhow::anyhow!("Path is not a directory: {}", dir_path));
+        }
+
+        let mut entries = fs::read_dir(dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            
+            if path.is_file() {
+                let file_path = path.to_string_lossy().to_string();
+                self.sync_single_file_with_versioning(&file_path, game_name).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn download_latest_version_internal(&mut self, file_path: &str, game_name: &str) -> Result<()> {
+        debug!("Attempting to download latest version for missing file: {}", file_path);
+        
+        let path = Path::new(file_path);
+        let relative_path = game_name.to_string() + "/" + &path.file_name()
+            .context("Invalid file path")?
+            .to_string_lossy();
+        
+        // Try to get the latest version and download it
+        match self.versioned_sync.download_latest(&relative_path, path).await {
+            Ok(_) => {
+                info!("Successfully downloaded latest version: {}", file_path);
+                Ok(())
+            }
+            Err(e) => {
+                warn!("No remote version found for: {} - {}", file_path, e);
+                Ok(()) // Don't fail if file doesn't exist remotely
+            }
+        }
+    }
+
+    // New versioning-specific methods
+    pub fn get_version_history(&self, game_name: &str, file_path: &str) -> Result<Vec<FileVersion>> {
+        let path = Path::new(file_path);
+        let relative_path = game_name.to_string() + "/" + &path.file_name()
+            .context("Invalid file path")?
+            .to_string_lossy();
+        
+        Ok(self.versioned_sync.list_versions(&relative_path)
+            .map(|versions| versions.clone())
+            .unwrap_or_default())
+    }
+
+    pub async fn restore_version(&mut self, game_name: &str, file_path: &str, version_id: &str) -> Result<()> {
+        let path = Path::new(file_path);
+        let relative_path = game_name.to_string() + "/" + &path.file_name()
+            .context("Invalid file path")?
+            .to_string_lossy();
+        
+        self.versioned_sync.download_version(&relative_path, version_id, path).await
+    }
+
+    pub fn pin_version(&mut self, game_name: &str, file_path: &str, version_id: &str) -> Result<()> {
+        let path = Path::new(file_path);
+        let relative_path = game_name.to_string() + "/" + &path.file_name()
+            .context("Invalid file path")?
+            .to_string_lossy();
+        
+        self.versioned_sync.pin_version(&relative_path, version_id)
+    }
+
+    pub async fn cleanup_old_versions(&mut self) -> Result<Vec<String>> {
+        self.versioned_sync.cleanup_old_versions().await
+    }
+
+    async fn download_latest_version(&self, file_path: &str, game_name: &str) -> Result<()> {
+        debug!("Attempting to download latest version for missing file: {}", file_path);
+        
+        let path = Path::new(file_path);
+        let relative_path = game_name.to_string() + "/" + &path.file_name()
+            .context("Invalid file path")?
+            .to_string_lossy();
+        
+        // Try to get the latest version and download it
+        match self.versioned_sync.download_latest(&relative_path, path).await {
+            Ok(_) => {
+                info!("Successfully downloaded latest version: {}", file_path);
+                Ok(())
+            }
+            Err(e) => {
+                warn!("No remote version found for: {} - {}", file_path, e);
+                Ok(()) // Don't fail if file doesn't exist remotely
+            }
+        }
     }
 }
 

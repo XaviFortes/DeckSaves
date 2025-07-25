@@ -84,6 +84,7 @@ async fn main() {
             commands::restore_version,
             commands::pin_version,
             commands::cleanup_old_versions,
+            commands::delete_version,
         ])
         .setup(|app| {
             // Setup tray icon

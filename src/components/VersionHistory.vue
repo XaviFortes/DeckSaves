@@ -76,6 +76,15 @@
           >
             {{ pinning === version.version_id ? '⏳' : (version.is_pinned ? '📌' : '📍') }}
           </button>
+
+          <button 
+            class="btn btn-sm btn-danger"
+            @click="deleteVersion(version)"
+            :disabled="deleting === version.version_id"
+            title="Delete this version"
+          >
+            {{ deleting === version.version_id ? '⏳' : '🗑️' }} Delete
+          </button>
         </div>
       </div>
     </div>
@@ -109,6 +118,7 @@ const versions = ref<FileVersion[]>([])
 const loading = ref(false)
 const restoring = ref<string | null>(null)
 const pinning = ref<string | null>(null)
+const deleting = ref<string | null>(null)
 const statusMessage = ref('')
 const statusType = ref<'success' | 'error' | 'info'>('info')
 
@@ -187,6 +197,35 @@ const togglePin = async (version: FileVersion) => {
     showStatus('Failed to toggle pin: ' + error, 'error')
   } finally {
     pinning.value = null
+  }
+}
+
+const deleteVersion = async (version: FileVersion) => {
+  const versionDate = formatDate(version.timestamp)
+  if (!confirm(`Are you sure you want to permanently delete the version from ${versionDate}? This action cannot be undone.`)) {
+    return
+  }
+
+  deleting.value = version.version_id
+  try {
+    await invoke('delete_version', {
+      gameName: props.gameName,
+      filePath: props.filePath,
+      versionId: version.version_id
+    })
+    
+    // Remove from local state
+    const versionIndex = versions.value.findIndex(v => v.version_id === version.version_id)
+    if (versionIndex !== -1) {
+      versions.value.splice(versionIndex, 1)
+    }
+    
+    showStatus('Version deleted successfully', 'success')
+  } catch (error) {
+    console.error('Failed to delete version:', error)
+    showStatus('Failed to delete version: ' + error, 'error')
+  } finally {
+    deleting.value = null
   }
 }
 
@@ -444,6 +483,15 @@ onMounted(() => {
 
 .btn-warning:hover:not(:disabled) {
   background: #d97706;
+}
+
+.btn-danger {
+  background: #dc2626;
+  color: white;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #b91c1c;
 }
 
 .btn-outline {

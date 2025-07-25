@@ -597,6 +597,65 @@ impl VersionedGameSaveSync {
         self.versioned_sync.pin_version(&relative_path, version_id)
     }
 
+    pub async fn delete_version(&mut self, game_name: &str, file_path: &str, version_id: &str) -> Result<()> {
+        println!("DEBUG delete_version: game_name='{}', file_path='{}', version_id='{}'", game_name, file_path, version_id);
+        
+        let path = Path::new(file_path);
+        
+        // For directories, check for game-level versions first (new approach)
+        if path.is_dir() {
+            println!("DEBUG delete_version: path is a directory, trying game-level version deletion");
+            
+            // Try to delete as a game-level version (directory snapshot)
+            let relative_path = game_name.to_string();
+            match self.versioned_sync.delete_version(&relative_path, version_id).await {
+                Ok(_) => {
+                    println!("DEBUG delete_version: successfully deleted game-level version");
+                    return Ok(());
+                }
+                Err(_) => {
+                    println!("DEBUG delete_version: game-level version not found, trying individual file approach");
+                    // Fallback to searching individual files
+                }
+            }
+            
+            // Fallback: Search through individual files to find which one contains this version_id
+            let mut found_file_path: Option<String> = None;
+            {
+                let manifest = self.versioned_sync.get_version_manager().get_manifest();
+                for (stored_file_path, file_info) in &manifest.files {
+                    // Check if this file belongs to the requested game
+                    if stored_file_path.starts_with(&format!("{}/", game_name)) {
+                        // Check if this file contains the version we're looking for
+                        for version in &file_info.versions {
+                            if version.version_id == version_id {
+                                println!("DEBUG delete_version: found version_id '{}' in file '{}'", version_id, stored_file_path);
+                                found_file_path = Some(stored_file_path.clone());
+                                break;
+                            }
+                        }
+                    }
+                    if found_file_path.is_some() {
+                        break;
+                    }
+                }
+            }
+            
+            if let Some(stored_file_path) = found_file_path {
+                return self.versioned_sync.delete_version(&stored_file_path, version_id).await;
+            }
+            
+            return Err(anyhow::anyhow!("Version {} not found for game {}", version_id, game_name));
+        }
+        
+        // Handle individual file
+        let relative_path = game_name.to_string() + "/" + &path.file_name()
+            .context("Invalid file path")?
+            .to_string_lossy();
+        
+        self.versioned_sync.delete_version(&relative_path, version_id).await
+    }
+
     pub async fn cleanup_old_versions(&mut self) -> Result<Vec<String>> {
         self.versioned_sync.cleanup_old_versions().await
     }

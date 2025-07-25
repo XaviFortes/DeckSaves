@@ -1100,3 +1100,32 @@ pub async fn cleanup_old_versions(state: State<'_, AppState>) -> Result<Vec<Stri
     info!("Cleaned up {} old versions", cleaned_versions.len());
     Ok(cleaned_versions)
 }
+
+#[command]
+pub async fn delete_version(
+    game_name: String,
+    file_path: String,
+    version_id: String,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    info!("delete_version command called: {} - {} -> {}", game_name, file_path, version_id);
+    println!("DEBUG DELETE VERSION: Game name: '{}', File path: '{}', Version ID: '{}'", game_name, file_path, version_id);
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    let mut sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
+        error!("Failed to create VersionedGameSaveSync: {}", e);
+        e.to_string()
+    })?;
+    
+    sync_handler.delete_version(&game_name, &file_path, &version_id).await.map_err(|e| {
+        error!("Failed to delete version: {}", e);
+        e.to_string()
+    })?;
+    
+    info!("Successfully deleted version {} for {} - {}", version_id, game_name, file_path);
+    Ok(format!("Deleted version {} successfully", version_id))
+}

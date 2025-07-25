@@ -238,6 +238,30 @@ impl VersionedSync {
         self.version_manager.pin_version(relative_path, version_id)
     }
 
+    /// Delete a specific version
+    pub async fn delete_version(&mut self, relative_path: &str, version_id: &str) -> Result<()> {
+        println!("DEBUG VersionedSync::delete_version: relative_path='{}', version_id='{}'", relative_path, version_id);
+        
+        // Get the version details before removing it from the manifest
+        let version = self.version_manager.get_version(relative_path, version_id)
+            .ok_or_else(|| anyhow::anyhow!("Version {} not found for file {}", version_id, relative_path))?
+            .clone();
+        
+        // Remove the version from the manifest
+        let version_id_string = version_id.to_string();
+        let _removed_version = self.version_manager.remove_version(relative_path, &version_id_string)?;
+        
+        // Delete the actual file from storage using the StorageProvider interface
+        self.storage_provider.delete_version(&self.game_name, relative_path, &version).await?;
+        
+        // Save the updated manifest - get the manifest reference and upload it
+        let manifest = self.version_manager.get_manifest();
+        self.storage_provider.upload_manifest(&self.game_name, manifest).await?;
+        
+        println!("DEBUG VersionedSync::delete_version: successfully deleted version '{}' for '{}'", version_id, relative_path);
+        Ok(())
+    }
+
     /// Get version manager for advanced operations
     pub fn get_version_manager(&self) -> &VersionManager {
         &self.version_manager

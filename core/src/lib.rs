@@ -588,13 +588,36 @@ impl VersionedGameSaveSync {
         Ok(())
     }
 
-    pub fn pin_version(&mut self, game_name: &str, file_path: &str, version_id: &str) -> Result<()> {
+    pub async fn pin_version(&mut self, game_name: &str, file_path: &str, version_id: &str) -> Result<()> {
+        println!("DEBUG pin_version: game_name='{}', file_path='{}', version_id='{}'", game_name, file_path, version_id);
+        
         let path = Path::new(file_path);
-        let relative_path = game_name.to_string() + "/" + &path.file_name()
+        
+        // For directories, check for game-level versions first (new approach)
+        if path.is_dir() {
+            println!("DEBUG pin_version: path is a directory, trying game-level version pinning");
+            
+            // Try to pin as a game-level version (directory snapshot)
+            let relative_path = game_name.to_string();
+            match self.versioned_sync.pin_version(&relative_path, version_id).await {
+                Ok(_) => {
+                    println!("DEBUG pin_version: successfully pinned game-level version");
+                    return Ok(());
+                }
+                Err(e) => {
+                    println!("DEBUG pin_version: game-level pinning failed: {}, trying individual file approach", e);
+                }
+            }
+        }
+        
+        // Fallback to individual file approach for backward compatibility
+        let filename = path.file_name()
             .context("Invalid file path")?
             .to_string_lossy();
+        let relative_path = game_name.to_string() + "/" + &filename;
         
-        self.versioned_sync.pin_version(&relative_path, version_id)
+        println!("DEBUG pin_version: trying individual file approach with path: {}", relative_path);
+        self.versioned_sync.pin_version(&relative_path, version_id).await
     }
 
     pub async fn delete_version(&mut self, game_name: &str, file_path: &str, version_id: &str) -> Result<()> {
@@ -623,17 +646,23 @@ impl VersionedGameSaveSync {
             let mut found_file_path: Option<String> = None;
             {
                 let manifest = self.versioned_sync.get_version_manager().get_manifest();
+                println!("DEBUG delete_version: searching manifest with {} files", manifest.files.len());
                 for (stored_file_path, file_info) in &manifest.files {
+                    println!("DEBUG delete_version: checking file '{}' with {} versions", stored_file_path, file_info.versions.len());
                     // Check if this file belongs to the requested game
-                    if stored_file_path.starts_with(&format!("{}/", game_name)) {
+                    if stored_file_path.starts_with(&format!("{}/", game_name)) || stored_file_path == game_name {
+                        println!("DEBUG delete_version: file '{}' belongs to game '{}'", stored_file_path, game_name);
                         // Check if this file contains the version we're looking for
                         for version in &file_info.versions {
+                            println!("DEBUG delete_version: checking version '{}' against target '{}'", version.version_id, version_id);
                             if version.version_id == version_id {
                                 println!("DEBUG delete_version: found version_id '{}' in file '{}'", version_id, stored_file_path);
                                 found_file_path = Some(stored_file_path.clone());
                                 break;
                             }
                         }
+                    } else {
+                        println!("DEBUG delete_version: file '{}' does not belong to game '{}'", stored_file_path, game_name);
                     }
                     if found_file_path.is_some() {
                         break;

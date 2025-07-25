@@ -1069,7 +1069,7 @@ pub async fn pin_version(
         e.to_string()
     })?;
     
-    sync_handler.pin_version(&game_name, &file_path, &version_id).map_err(|e| {
+    sync_handler.pin_version(&game_name, &file_path, &version_id).await.map_err(|e| {
         error!("Failed to pin version: {}", e);
         e.to_string()
     })?;

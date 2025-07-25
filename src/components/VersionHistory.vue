@@ -182,16 +182,17 @@ const togglePin = async (version: FileVersion) => {
       versionId: version.version_id
     })
     
-    // Update local state
+    // Update local state - toggle the pin status
     const versionIndex = versions.value.findIndex(v => v.version_id === version.version_id)
     if (versionIndex !== -1) {
-      versions.value[versionIndex].is_pinned = !version.is_pinned
+      const newPinStatus = !version.is_pinned
+      versions.value[versionIndex].is_pinned = newPinStatus
+      
+      showStatus(
+        newPinStatus ? 'Version pinned successfully' : 'Version unpinned successfully',
+        'success'
+      )
     }
-    
-    showStatus(
-      version.is_pinned ? 'Version unpinned' : 'Version pinned successfully',
-      'success'
-    )
   } catch (error) {
     console.error('Failed to toggle pin:', error)
     showStatus('Failed to toggle pin: ' + error, 'error')
@@ -201,6 +202,33 @@ const togglePin = async (version: FileVersion) => {
 }
 
 const deleteVersion = async (version: FileVersion) => {
+  // Check if the version is pinned
+  if (version.is_pinned) {
+    const shouldUnpinAndDelete = confirm(`This version is pinned. You must unpin it first before deleting.\n\nClick "OK" to unpin and then delete, or "Cancel" to abort.`)
+    if (!shouldUnpinAndDelete) {
+      return
+    }
+    
+    // First unpin the version
+    try {
+      await invoke('pin_version', {
+        gameName: props.gameName,
+        filePath: props.filePath,
+        versionId: version.version_id
+      })
+      
+      // Update local state - find and update the version in the array
+      const versionIndex = versions.value.findIndex(v => v.version_id === version.version_id)
+      if (versionIndex !== -1) {
+        versions.value[versionIndex].is_pinned = false
+        showStatus('Version unpinned successfully', 'success')
+      }
+    } catch (error) {
+      showStatus('Failed to unpin version: ' + error, 'error')
+      return
+    }
+  }
+
   const versionDate = formatDate(version.timestamp)
   if (!confirm(`Are you sure you want to permanently delete the version from ${versionDate}? This action cannot be undone.`)) {
     return
@@ -223,7 +251,14 @@ const deleteVersion = async (version: FileVersion) => {
     showStatus('Version deleted successfully', 'success')
   } catch (error) {
     console.error('Failed to delete version:', error)
-    showStatus('Failed to delete version: ' + error, 'error')
+    
+    // Provide better error messages
+    const errorStr = String(error)
+    if (errorStr.includes('Cannot remove pinned version')) {
+      showStatus('Cannot delete pinned version. Please unpin it first by clicking the 📌 button.', 'error')
+    } else {
+      showStatus('Failed to delete version: ' + error, 'error')
+    }
   } finally {
     deleting.value = null
   }

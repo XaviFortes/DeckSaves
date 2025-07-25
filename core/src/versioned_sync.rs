@@ -234,8 +234,15 @@ impl VersionedSync {
     }
 
     /// Pin a version to prevent automatic cleanup
-    pub fn pin_version(&mut self, relative_path: &str, version_id: &str) -> Result<()> {
-        self.version_manager.pin_version(relative_path, version_id)
+    pub async fn pin_version(&mut self, relative_path: &str, version_id: &str) -> Result<()> {
+        // Update the pin status in the manifest
+        self.version_manager.pin_version(relative_path, version_id)?;
+        
+        // Save the updated manifest
+        let manifest = self.version_manager.get_manifest();
+        self.storage_provider.upload_manifest(&self.game_name, manifest).await?;
+        
+        Ok(())
     }
 
     /// Delete a specific version

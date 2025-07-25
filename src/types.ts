@@ -55,3 +55,13 @@ export interface Config {
 export interface SystemInfo {
   [key: string]: any
 }
+
+export interface FileVersion {
+  version_id: string
+  timestamp: string
+  size: number
+  hash: string
+  storage_metadata: Record<string, string>
+  description?: string
+  is_pinned: boolean
+}

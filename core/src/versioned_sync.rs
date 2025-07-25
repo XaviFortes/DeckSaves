@@ -203,9 +203,70 @@ impl VersionedSync {
         self.version_manager.get_file_versions(relative_path)
     }
 
+    /// Get all versions for the current game across all files
+    pub fn get_all_versions_for_game(&self, game_name: &str) -> Option<Vec<FileVersion>> {
+        let manifest = self.version_manager.get_manifest();
+        let mut all_versions = Vec::new();
+        
+        // Iterate through all files in the manifest and collect versions only for the specified game
+        for (file_path, file_info) in &manifest.files {
+            // Filter to only include files that belong to the requested game
+            // Files are stored with format "GameName/filename" 
+            if file_path.starts_with(&format!("{}/", game_name)) {
+                println!("DEBUG get_all_versions_for_game: found file '{}' with {} versions (matches game '{}')", file_path, file_info.versions.len(), game_name);
+                for version in &file_info.versions {
+                    // Create a copy of the version with file path information
+                    let version_with_path = version.clone();
+                    // We can add the file path to the description or store it somehow
+                    // For now, the version already has the file_path in the FileInfo structure
+                    all_versions.push(version_with_path);
+                }
+            } else {
+                println!("DEBUG get_all_versions_for_game: skipping file '{}' (doesn't match game '{}')", file_path, game_name);
+            }
+        }
+        
+        // Sort versions by timestamp (newest first)
+        all_versions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        
+        println!("DEBUG get_all_versions_for_game: returning {} total versions for game '{}'", all_versions.len(), game_name);
+        Some(all_versions)
+    }
+
     /// Pin a version to prevent automatic cleanup
-    pub fn pin_version(&mut self, relative_path: &str, version_id: &str) -> Result<()> {
-        self.version_manager.pin_version(relative_path, version_id)
+    pub async fn pin_version(&mut self, relative_path: &str, version_id: &str) -> Result<()> {
+        // Update the pin status in the manifest
+        self.version_manager.pin_version(relative_path, version_id)?;
+        
+        // Save the updated manifest
+        let manifest = self.version_manager.get_manifest();
+        self.storage_provider.upload_manifest(&self.game_name, manifest).await?;
+        
+        Ok(())
+    }
+
+    /// Delete a specific version
+    pub async fn delete_version(&mut self, relative_path: &str, version_id: &str) -> Result<()> {
+        println!("DEBUG VersionedSync::delete_version: relative_path='{}', version_id='{}'", relative_path, version_id);
+        
+        // Get the version details before removing it from the manifest
+        let version = self.version_manager.get_version(relative_path, version_id)
+            .ok_or_else(|| anyhow::anyhow!("Version {} not found for file {}", version_id, relative_path))?
+            .clone();
+        
+        // Remove the version from the manifest
+        let version_id_string = version_id.to_string();
+        let _removed_version = self.version_manager.remove_version(relative_path, &version_id_string)?;
+        
+        // Delete the actual file from storage using the StorageProvider interface
+        self.storage_provider.delete_version(&self.game_name, relative_path, &version).await?;
+        
+        // Save the updated manifest - get the manifest reference and upload it
+        let manifest = self.version_manager.get_manifest();
+        self.storage_provider.upload_manifest(&self.game_name, manifest).await?;
+        
+        println!("DEBUG VersionedSync::delete_version: successfully deleted version '{}' for '{}'", version_id, relative_path);
+        Ok(())
     }
 
     /// Get version manager for advanced operations

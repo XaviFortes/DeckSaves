@@ -4,6 +4,11 @@ A cross-platform game save synchronization tool with support for cloud storage (
 
 ## Features
 
+- **🕒 Versioned Sync**: Automatic version history and restore capabilities for save files
+  - Timestamped versions with hash verification
+  - Pin important saves (before boss fights, achievements)
+  - One-click restore to any previous version
+  - Smart cleanup with configurable retention policies
 - **Real-time File Watching**: Monitor game save files for changes using OS-native file system events
 - **Background Daemon**: Run as a system service for continuous monitoring
 - **Cloud Sync**: Upload and download saves to/from AWS S3

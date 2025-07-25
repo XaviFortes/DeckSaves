@@ -54,6 +54,19 @@ pub async fn save_config(config: SyncConfig, state: State<'_, AppState>) -> Resu
 }
 
 #[command]
+pub async fn enable_local_storage(state: State<'_, AppState>) -> Result<String, String> {
+    let mut config = state.config_manager.load_config().await.map_err(|e| e.to_string())?;
+    
+    config.use_local_storage = true;
+    if config.local_base_path.is_empty() {
+        config.local_base_path = String::from("~/.decksaves");
+    }
+    
+    state.config_manager.save_config(&config).await.map_err(|e| e.to_string())?;
+    Ok("Local storage enabled successfully".to_string())
+}
+
+#[command]
 pub async fn set_aws_credentials(
     access_key_id: String,
     secret_access_key: String,
@@ -939,6 +952,7 @@ pub async fn add_steam_game_to_config(
 #[command]
 pub async fn sync_game_with_versioning(game_name: String, state: State<'_, AppState>) -> Result<String, String> {
     info!("sync_game_with_versioning command called for: {}", game_name);
+    println!("DEBUG VERSIONED SYNC: Game name received: '{}'", game_name);
     
     let config = state.config_manager.load_config().await.map_err(|e| {
         error!("Failed to load config: {}", e);
@@ -986,6 +1000,7 @@ pub async fn get_version_history(
     state: State<'_, AppState>
 ) -> Result<Vec<FileVersion>, String> {
     info!("get_version_history command called for: {} - {}", game_name, file_path);
+    println!("DEBUG VERSION HISTORY: Game name: '{}', File path: '{}'", game_name, file_path);
     
     let config = state.config_manager.load_config().await.map_err(|e| {
         error!("Failed to load config: {}", e);
@@ -1014,6 +1029,7 @@ pub async fn restore_version(
     state: State<'_, AppState>
 ) -> Result<String, String> {
     info!("restore_version command called: {} - {} -> {}", game_name, file_path, version_id);
+    println!("DEBUG RESTORE VERSION: Game name: '{}', File path: '{}', Version ID: '{}'", game_name, file_path, version_id);
     
     let config = state.config_manager.load_config().await.map_err(|e| {
         error!("Failed to load config: {}", e);
@@ -1053,7 +1069,7 @@ pub async fn pin_version(
         e.to_string()
     })?;
     
-    sync_handler.pin_version(&game_name, &file_path, &version_id).map_err(|e| {
+    sync_handler.pin_version(&game_name, &file_path, &version_id).await.map_err(|e| {
         error!("Failed to pin version: {}", e);
         e.to_string()
     })?;
@@ -1083,4 +1099,33 @@ pub async fn cleanup_old_versions(state: State<'_, AppState>) -> Result<Vec<Stri
     
     info!("Cleaned up {} old versions", cleaned_versions.len());
     Ok(cleaned_versions)
+}
+
+#[command]
+pub async fn delete_version(
+    game_name: String,
+    file_path: String,
+    version_id: String,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    info!("delete_version command called: {} - {} -> {}", game_name, file_path, version_id);
+    println!("DEBUG DELETE VERSION: Game name: '{}', File path: '{}', Version ID: '{}'", game_name, file_path, version_id);
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    let mut sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
+        error!("Failed to create VersionedGameSaveSync: {}", e);
+        e.to_string()
+    })?;
+    
+    sync_handler.delete_version(&game_name, &file_path, &version_id).await.map_err(|e| {
+        error!("Failed to delete version: {}", e);
+        e.to_string()
+    })?;
+    
+    info!("Successfully deleted version {} for {} - {}", version_id, game_name, file_path);
+    Ok(format!("Deleted version {} successfully", version_id))
 }

@@ -219,7 +219,7 @@ impl VersionManager {
         self.get_version(file_path, current_id)
     }
 
-    /// Pin a specific version to prevent cleanup
+    /// Pin or unpin a specific version to prevent cleanup
     pub fn pin_version(&mut self, file_path: &str, version_id: &str) -> Result<()> {
         let manifest = self.game_manifest.files.get_mut(file_path)
             .context("File not found in manifest")?;
@@ -228,8 +228,15 @@ impl VersionManager {
             .find(|v| v.version_id == version_id)
             .context("Version not found")?;
         
-        version.is_pinned = true;
-        info!("Pinned version {} for file {}", version_id, file_path);
+        // Toggle the pin status
+        version.is_pinned = !version.is_pinned;
+        
+        if version.is_pinned {
+            info!("Pinned version {} for file {}", version_id, file_path);
+        } else {
+            info!("Unpinned version {} for file {}", version_id, file_path);
+        }
+        
         Ok(())
     }
 

@@ -3,13 +3,13 @@ import { ref, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import GameList from './components/GameList.vue'
-import ConfigPanel from './components/ConfigPanel.vue'
+import StorageConfig from './components/StorageConfig.vue'
 import SyncStatus from './components/SyncStatus.vue'
 import type { Game, Config } from './types'
 
 const games = ref<Game[]>([])
 const config = ref<Config | null>(null)
-const activeTab = ref<'games' | 'config' | 'sync'>('games')
+const activeTab = ref<'games' | 'storage' | 'sync'>('games')
 const loading = ref(true)
 
 onMounted(async () => {
@@ -95,10 +95,6 @@ const handleGameUpdated = (updatedGame: Game) => {
 const handleGameRemoved = (gameId: string) => {
   games.value = games.value.filter(game => game.id !== gameId)
 }
-
-const handleConfigUpdated = (newConfig: Config) => {
-  config.value = newConfig
-}
 </script>
 
 <template>
@@ -113,16 +109,16 @@ const handleConfigUpdated = (newConfig: Config) => {
           Games
         </button>
         <button 
+          :class="{ active: activeTab === 'storage' }"
+          @click="activeTab = 'storage'"
+        >
+          Storage
+        </button>
+        <button 
           :class="{ active: activeTab === 'sync' }"
           @click="activeTab = 'sync'"
         >
           Sync Status
-        </button>
-        <button 
-          :class="{ active: activeTab === 'config' }"
-          @click="activeTab = 'config'"
-        >
-          Settings
         </button>
       </nav>
     </header>
@@ -143,15 +139,13 @@ const handleConfigUpdated = (newConfig: Config) => {
           @refresh-games="refreshGames"
         />
         
+        <StorageConfig 
+          v-if="activeTab === 'storage'"
+        />
+        
         <SyncStatus 
           v-if="activeTab === 'sync'"
           :games="games"
-        />
-        
-        <ConfigPanel 
-          v-if="activeTab === 'config' && config"
-          :config="config"
-          @config-updated="handleConfigUpdated"
         />
       </div>
     </main>

@@ -85,6 +85,7 @@ async fn main() {
             commands::pin_version,
             commands::cleanup_old_versions,
             commands::delete_version,
+            commands::test_s3_connection,
         ])
         .setup(|app| {
             // Setup tray icon

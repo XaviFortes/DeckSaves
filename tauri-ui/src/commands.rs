@@ -1129,3 +1129,34 @@ pub async fn delete_version(
     info!("Successfully deleted version {} for {} - {}", version_id, game_name, file_path);
     Ok(format!("Deleted version {} successfully", version_id))
 }
+
+#[command]
+pub async fn test_s3_connection(config: SyncConfig) -> Result<String, String> {
+    info!("Testing S3 connection with provided config");
+    
+    // Validate required S3 fields
+    if config.s3_bucket.is_none() {
+        return Err("S3 bucket name is required".to_string());
+    }
+    
+    if config.aws_access_key_id.is_none() {
+        return Err("AWS access key ID is required".to_string());
+    }
+    
+    if config.aws_secret_access_key.is_none() {
+        return Err("AWS secret access key is required".to_string());
+    }
+    
+    // Try to create a VersionedGameSaveSync instance with the config
+    // This will test the S3 connection during initialization
+    match VersionedGameSaveSync::new(config).await {
+        Ok(_) => {
+            info!("S3 connection test successful");
+            Ok("S3 connection test successful!".to_string())
+        }
+        Err(e) => {
+            error!("S3 connection test failed: {}", e);
+            Err(format!("S3 connection test failed: {}", e))
+        }
+    }
+}

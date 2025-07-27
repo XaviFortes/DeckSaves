@@ -21,11 +21,13 @@ pub mod steam;
 pub mod versioning;
 pub mod storage;
 pub mod versioned_sync;
+pub mod progress;
 
 use crypto::CredentialCrypto;
 pub use versioning::{VersionManager, FileVersion, GameVersionManifest, VersionConfig};
 pub use versioned_sync::VersionedSync;
 pub use storage::providers::{StorageProvider, S3StorageProvider, LocalStorageProvider};
+pub use progress::{SyncProgress, ProgressCallback, SimpleProgressCallback, EnhancedSyncSummary, FileOperationResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameConfig {
@@ -235,10 +237,16 @@ impl VersionedGameSaveSync {
         } else if let Some(bucket) = &config.s3_bucket {
             debug!("Setting up S3 storage config");
             
+            // Get AWS credentials from config
+            let access_key = config.get_aws_access_key().unwrap_or(None);
+            let secret_key = config.get_aws_secret_key().unwrap_or(None);
+            
             storage::StorageConfig {
                 backend: storage::StorageBackend::S3 {
                     bucket: bucket.clone(),
                     region: config.s3_region.clone().unwrap_or_else(|| "us-east-1".to_string()),
+                    access_key,
+                    secret_key,
                 },
                 connection_timeout_seconds: 30,
                 retry_attempts: 3,
@@ -279,6 +287,92 @@ impl VersionedGameSaveSync {
         ).await?;
         
         Ok(Self { config, versioned_sync })
+    }
+
+    /// Initialize sync for a specific game with intelligent cloud/local merge
+    pub async fn initialize_game_sync(&mut self, game_name: &str) -> Result<()> {
+        info!("Initializing smart sync for game: {}", game_name);
+        
+        // Create a new versioned sync instance for this specific game
+        let storage_config = if self.config.use_local_storage || self.config.s3_bucket.is_none() {
+            let local_path = if self.config.local_base_path.is_empty() {
+                dirs::home_dir()
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".decksaves")
+                    .join("local_storage")
+            } else {
+                std::path::PathBuf::from(shellexpand::tilde(&self.config.local_base_path).to_string())
+                    .join("local_storage")
+            };
+            
+            storage::StorageConfig {
+                backend: storage::StorageBackend::Local {
+                    base_path: local_path.to_string_lossy().to_string(),
+                },
+                connection_timeout_seconds: 30,
+                retry_attempts: 3,
+                enable_compression: true,
+                encryption_enabled: false,
+            }
+        } else if let Some(bucket) = &self.config.s3_bucket {
+            // Get AWS credentials from the main config
+            let access_key = self.config.get_aws_access_key().unwrap_or(None);
+            let secret_key = self.config.get_aws_secret_key().unwrap_or(None);
+            
+            debug!("🔑 Creating S3 storage config with credentials: access_key={}, secret_key={}", 
+                   access_key.is_some(), secret_key.is_some());
+            
+            storage::StorageConfig {
+                backend: storage::StorageBackend::S3 {
+                    bucket: bucket.clone(),
+                    region: self.config.s3_region.clone().unwrap_or_else(|| "us-east-1".to_string()),
+                    access_key,
+                    secret_key,
+                },
+                connection_timeout_seconds: 30,
+                retry_attempts: 3,
+                enable_compression: true,
+                encryption_enabled: true,
+            }
+        } else {
+            let local_path = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join(".decksaves")
+                .join("local_storage");
+            
+            storage::StorageConfig {
+                backend: storage::StorageBackend::Local {
+                    base_path: local_path.to_string_lossy().to_string(),
+                },
+                connection_timeout_seconds: 30,
+                retry_attempts: 3,
+                enable_compression: true,
+                encryption_enabled: false,
+            }
+        };
+        
+        let version_config = VersionConfig {
+            max_versions_per_file: 10,
+            max_version_age_days: 30,
+            keep_pinned_versions: true,
+            auto_pin_strategy: versioning::AutoPinStrategy::Weekly,
+        };
+        
+        // Create new VersionedSync with intelligent merging for this specific game
+        let mut game_sync = VersionedSync::new(
+            game_name.to_string(),
+            storage_config,
+            version_config,
+        ).await?;
+        
+        // Perform full bidirectional sync to merge local and remote data
+        let summary = game_sync.perform_full_sync().await?;
+        info!("Game sync initialization completed for '{}': {:?}", game_name, summary);
+        
+        // Update our instance to use this game-specific sync
+        self.versioned_sync = game_sync;
+        
+        Ok(())
     }
 
     pub async fn sync_game(&mut self, game_name: &str) -> Result<()> {
@@ -446,8 +540,25 @@ impl VersionedGameSaveSync {
     }
 
     // New versioning-specific methods
-    pub fn get_version_history(&self, game_name: &str, file_path: &str) -> Result<Vec<FileVersion>> {
+    pub async fn get_version_history(&mut self, game_name: &str, file_path: &str) -> Result<Vec<FileVersion>> {
         println!("DEBUG get_version_history: game_name='{}', file_path='{}'", game_name, file_path);
+        
+        // Initialize game sync to ensure we're using the right game name and storage
+        debug!("🎮 Initializing sync for game '{}'...", game_name);
+        if let Err(e) = self.initialize_game_sync(game_name).await {
+            warn!("⚠️  Failed to initialize game sync: {}, using existing sync", e);
+        } else {
+            debug!("✅ Successfully initialized sync for game '{}'", game_name);
+        }
+        
+        // First, sync with remote manifest to get latest version information
+        debug!("🔄 Syncing with remote manifest to get latest version history...");
+        if let Err(e) = self.sync_with_remote_manifest().await {
+            warn!("⚠️  Failed to sync with remote manifest: {}, using local data only", e);
+        } else {
+            debug!("✅ Successfully synced with remote manifest");
+        }
+        
         let path = Path::new(file_path);
         
         // For directories, look for game-level versions (new approach)
@@ -497,6 +608,14 @@ impl VersionedGameSaveSync {
         
         println!("DEBUG get_version_history: found {} versions", versions.len());
         Ok(versions)
+    }
+
+    /// Sync local manifest with remote manifest to get latest version information
+    async fn sync_with_remote_manifest(&mut self) -> Result<()> {
+        debug!("📡 Downloading remote manifest from S3...");
+        
+        // Use the public method from VersionedSync to sync with remote
+        self.versioned_sync.sync_with_remote_for_history().await
     }
 
     pub async fn restore_version(&mut self, game_name: &str, file_path: &str, version_id: &str) -> Result<()> {
@@ -708,6 +827,322 @@ impl VersionedGameSaveSync {
                 Ok(()) // Don't fail if file doesn't exist remotely
             }
         }
+    }
+
+    /// Unified sync method that combines smart sync, versioning, and progress tracking
+    pub async fn unified_sync_game(
+        &mut self, 
+        game_name: &str,
+        progress_callback: Option<Box<dyn ProgressCallback>>
+    ) -> Result<EnhancedSyncSummary> {
+        info!("🚀 Starting unified sync for game: {}", game_name);
+        debug!("unified_sync_game called with game_name: '{}', progress_callback provided: {}", 
+               game_name, progress_callback.is_some());
+        
+        let game_config = self.config.games.get(game_name)
+            .context("Game not found in configuration")?
+            .clone();
+
+        if !game_config.sync_enabled {
+            warn!("⚠️  Sync disabled for game: {}", game_name);
+            return Ok(EnhancedSyncSummary::new());
+        }
+
+        debug!("📋 Game config loaded - sync_enabled: {}, save_paths: {:?}", 
+               game_config.sync_enabled, game_config.save_paths);
+
+        // Step 1: Initialize smart sync to merge remote and local data
+        let total_steps = 3 + game_config.save_paths.len(); // smart init + process files + final cleanup
+        let mut overall_progress = SyncProgress::new("Unified Sync".to_string(), total_steps);
+        
+        overall_progress.update_step(1, "🔄 Initializing smart sync (merging cloud/local data)...".to_string());
+        if let Some(ref callback) = progress_callback {
+            callback.on_progress(overall_progress.clone());
+        }
+
+        info!("🔄 Step 1/3: Initializing smart sync for game: {}", game_name);
+        debug!("About to call initialize_game_sync for: {}", game_name);
+        
+        match self.initialize_game_sync(game_name).await {
+            Ok(_) => {
+                info!("✅ Smart sync initialization completed successfully");
+                debug!("initialize_game_sync completed without errors");
+            }
+            Err(e) => {
+                error!("❌ Smart sync initialization failed: {}", e);
+                return Err(e);
+            }
+        }
+
+        // Step 2: Process each save path with versioning and progress tracking
+        let save_paths = game_config.save_paths.clone();
+        info!("📁 Step 2/3: Processing {} save paths with versioning", save_paths.len());
+        debug!("Save paths to process: {:?}", save_paths);
+        
+        let mut combined_summary = EnhancedSyncSummary::new();
+        
+        for (index, save_path) in save_paths.iter().enumerate() {
+            let step_num = 2 + index;
+            overall_progress.update_step(step_num, format!("📂 Processing save path: {}", save_path));
+            overall_progress.set_current_file(save_path.clone());
+            if let Some(ref callback) = progress_callback {
+                callback.on_progress(overall_progress.clone());
+            }
+
+            info!("📂 Processing save path {}/{}: {}", index + 1, save_paths.len(), save_path);
+            debug!("About to sync file with versioning: {}", save_path);
+            
+            // Add detailed pre-sync checks
+            let path = Path::new(save_path);
+            if path.exists() {
+                if path.is_dir() {
+                    debug!("📁 Save path is a directory: {}", save_path);
+                    if let Ok(entries) = std::fs::read_dir(path) {
+                        let file_count = entries.count();
+                        debug!("📁 Directory contains {} entries", file_count);
+                    }
+                } else if path.is_file() {
+                    if let Ok(metadata) = std::fs::metadata(path) {
+                        debug!("📄 Save path is a file: {} (size: {} bytes)", save_path, metadata.len());
+                    }
+                }
+            } else {
+                warn!("❌ Save path does not exist: {}", save_path);
+            }
+            
+            match self.sync_file_with_versioning_progress(save_path, game_name, progress_callback.as_ref()).await {
+                Ok(file_summary) => {
+                    info!("✅ Successfully processed save path: {}", save_path);
+                    debug!("📊 File summary for {}: uploaded={}, downloaded={}, bytes={}", 
+                           save_path, file_summary.files_uploaded, file_summary.files_downloaded, 
+                           file_summary.total_bytes_transferred);
+                    debug!("📋 File operations: {:?}", file_summary.file_details);
+                    
+                    // Merge file summary into overall summary
+                    combined_summary.files_uploaded += file_summary.files_uploaded;
+                    combined_summary.files_downloaded += file_summary.files_downloaded;
+                    combined_summary.total_bytes_transferred += file_summary.total_bytes_transferred;
+                    combined_summary.conflicts_resolved += file_summary.conflicts_resolved;
+                    
+                    for (file_path, operation) in file_summary.file_details {
+                        combined_summary.file_details.insert(file_path, operation);
+                    }
+                }
+                Err(e) => {
+                    error!("❌ Failed to process save path {}: {}", save_path, e);
+                    debug!("Error details: {:?}", e);
+                    // Continue with other paths instead of failing completely
+                    warn!("⚠️  Continuing with remaining save paths despite error");
+                }
+            }
+        }
+
+        // Step 3: Final completion
+        overall_progress.update_step(total_steps, "🎉 Unified sync completed successfully!".to_string());
+        overall_progress.complete();
+        if let Some(ref callback) = progress_callback {
+            callback.on_progress(overall_progress);
+        }
+
+        info!("🎉 Unified sync completed successfully for game: {}", game_name);
+        info!("📊 Final summary - Files uploaded: {}, Files downloaded: {}, Total bytes: {}, Conflicts resolved: {}", 
+              combined_summary.files_uploaded, combined_summary.files_downloaded, 
+              combined_summary.total_bytes_transferred, combined_summary.conflicts_resolved);
+        debug!("Detailed file operations: {:?}", combined_summary.file_details);
+        
+        Ok(combined_summary)
+    }
+
+    /// Legacy sync method with progress tracking (deprecated - use unified_sync_game)
+    #[deprecated(note = "Use unified_sync_game instead")]
+    pub async fn sync_game_with_progress(
+        &mut self, 
+        game_name: &str,
+        progress_callback: Option<Box<dyn ProgressCallback>>
+    ) -> Result<EnhancedSyncSummary> {
+        warn!("🔧 Using deprecated sync_game_with_progress, redirecting to unified_sync_game");
+        self.unified_sync_game(game_name, progress_callback).await
+    }
+
+    async fn sync_file_with_versioning_progress(
+        &mut self, 
+        file_path: &str, 
+        game_name: &str,
+        progress_callback: Option<&Box<dyn ProgressCallback>>
+    ) -> Result<EnhancedSyncSummary> {
+        debug!("sync_file_with_versioning_progress called for: {} (game: {})", file_path, game_name);
+        
+        let path = Path::new(file_path);
+        
+        if !path.exists() {
+            warn!("Save path does not exist: {}", file_path);
+            // Try to download the latest version from storage
+            let mut summary = EnhancedSyncSummary::new();
+            
+            if let Some(ref callback) = progress_callback {
+                let mut progress = SyncProgress::new("Download Missing File".to_string(), 1);
+                progress.set_current_file(file_path.to_string());
+                callback.on_progress(progress);
+            }
+            
+            match self.download_latest_version_internal(file_path, game_name).await {
+                Ok(_) => {
+                    summary.files_downloaded += 1;
+                }
+                Err(e) => {
+                    warn!("Failed to download missing file: {}", e);
+                }
+            }
+            
+            return Ok(summary);
+        }
+
+        if path.is_dir() {
+            debug!("Path is a directory, creating directory snapshot: {}", file_path);
+            return self.sync_directory_as_single_version_progress(file_path, game_name, progress_callback).await;
+        }
+
+        // For individual files, still sync them individually (for backward compatibility)
+        self.sync_single_file_with_versioning_progress(file_path, game_name, progress_callback).await
+    }
+
+    async fn sync_directory_as_single_version_progress(
+        &mut self, 
+        dir_path: &str, 
+        game_name: &str,
+        progress_callback: Option<&Box<dyn ProgressCallback>>
+    ) -> Result<EnhancedSyncSummary> {
+        debug!("🗂️  Creating single version snapshot for directory: {}", dir_path);
+        
+        if let Some(ref callback) = progress_callback {
+            let mut progress = SyncProgress::new("Directory Sync".to_string(), 3);
+            progress.update_step(1, "Creating directory archive...".to_string());
+            progress.set_current_file(dir_path.to_string());
+            callback.on_progress(progress);
+        }
+        
+        let dir = Path::new(dir_path);
+        if !dir.is_dir() {
+            return Err(anyhow::anyhow!("Path is not a directory: {}", dir_path));
+        }
+
+        // Count files in directory for better logging
+        let mut file_count = 0;
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() {
+                        file_count += 1;
+                    } else if path.is_dir() {
+                        debug!("📁 Found subdirectory: {}", path.display());
+                        // Count files recursively
+                        fn count_files_recursive(dir: &Path) -> usize {
+                            let mut count = 0;
+                            if let Ok(entries) = std::fs::read_dir(dir) {
+                                for entry in entries {
+                                    if let Ok(entry) = entry {
+                                        let path = entry.path();
+                                        if path.is_file() {
+                                            count += 1;
+                                        } else if path.is_dir() {
+                                            count += count_files_recursive(&path);
+                                        }
+                                    }
+                                }
+                            }
+                            count
+                        }
+                        let subdir_files = count_files_recursive(&path);
+                        file_count += subdir_files;
+                        debug!("📁 Subdirectory {} contains {} files", path.display(), subdir_files);
+                    }
+                }
+            }
+        }
+        
+        info!("📊 Directory {} contains {} total files to archive", dir_path, file_count);
+
+        // Create a temporary archive of the entire directory
+        let temp_dir = std::env::temp_dir();
+        let archive_name = format!("{}_{}.tar.gz", game_name, chrono::Utc::now().timestamp());
+        let archive_path = temp_dir.join(&archive_name);
+        
+        debug!("📦 Creating archive: {} -> {}", dir_path, archive_path.display());
+        
+        // Create tar.gz archive of the directory
+        self.create_directory_archive(dir_path, &archive_path).await?;
+        
+        // Check archive size
+        if let Ok(metadata) = std::fs::metadata(&archive_path) {
+            info!("📦 Archive created successfully: {} bytes", metadata.len());
+        }
+        
+        if let Some(ref callback) = progress_callback {
+            let mut progress = SyncProgress::new("Directory Sync".to_string(), 3);
+            progress.update_step(2, "Uploading archive...".to_string());
+            progress.set_current_file(archive_name.clone());
+            callback.on_progress(progress);
+        }
+        
+        // Store the archive as a single version with the game name as the relative path
+        let relative_path = game_name.to_string();
+        
+        debug!("☁️  Uploading archive to storage with relative path: {}", relative_path);
+        
+        match self.versioned_sync.sync_file_to_storage_with_progress(&archive_path, &relative_path, Some("Directory snapshot".to_string()), None).await {
+            Ok(summary) => {
+                info!("✅ Successfully created directory snapshot for: {}", dir_path);
+                debug!("📊 Upload summary: uploaded={}, downloaded={}, bytes={}", 
+                       summary.files_uploaded, summary.files_downloaded, summary.total_bytes_transferred);
+                
+                if let Some(ref callback) = progress_callback {
+                    let mut progress = SyncProgress::new("Directory Sync".to_string(), 3);
+                    progress.update_step(3, "Cleaning up...".to_string());
+                    callback.on_progress(progress);
+                }
+                
+                // Clean up temporary archive
+                if archive_path.exists() {
+                    debug!("🧹 Removing temporary archive: {}", archive_path.display());
+                    std::fs::remove_file(&archive_path).ok();
+                }
+                Ok(summary)
+            }
+            Err(e) => {
+                error!("❌ Failed to create directory snapshot: {}", e);
+                debug!("Error details: {:?}", e);
+                // Clean up temporary archive
+                if archive_path.exists() {
+                    debug!("🧹 Removing temporary archive after error: {}", archive_path.display());
+                    std::fs::remove_file(&archive_path).ok();
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn sync_single_file_with_versioning_progress(
+        &mut self, 
+        file_path: &str, 
+        game_name: &str,
+        progress_callback: Option<&Box<dyn ProgressCallback>>
+    ) -> Result<EnhancedSyncSummary> {
+        debug!("sync_single_file_with_versioning_progress called for: {} (game: {})", file_path, game_name);
+        
+        if let Some(ref callback) = progress_callback {
+            let mut progress = SyncProgress::new("File Sync".to_string(), 1);
+            progress.set_current_file(file_path.to_string());
+            callback.on_progress(progress);
+        }
+        
+        let path = Path::new(file_path);
+        let relative_path = game_name.to_string() + "/" + &path.file_name()
+            .context("Invalid file path")?
+            .to_string_lossy();
+        
+        let summary = self.versioned_sync.sync_file_to_storage_with_progress(path, &relative_path, None, None).await?;
+        Ok(summary)
     }
 }
 

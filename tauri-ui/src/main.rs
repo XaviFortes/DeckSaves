@@ -86,6 +86,8 @@ async fn main() {
             commands::cleanup_old_versions,
             commands::delete_version,
             commands::test_s3_connection,
+            commands::initialize_smart_sync,
+            commands::unified_sync_game,
         ])
         .setup(|app| {
             // Setup tray icon

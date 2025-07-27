@@ -2,13 +2,19 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tracing::{debug, error};
 
 use crate::versioning::{FileVersion, GameVersionManifest};
 
 /// Storage backend identifier
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StorageBackend {
-    S3 { bucket: String, region: String },
+    S3 { 
+        bucket: String, 
+        region: String,
+        access_key: Option<String>,
+        secret_key: Option<String>,
+    },
     GoogleDrive { folder_id: String },
     WebDAV { base_url: String, username: String },
     Local { base_path: String },
@@ -104,8 +110,14 @@ impl StorageFactory {
     /// Create a storage provider based on config
     pub async fn create_provider(config: &StorageConfig) -> Result<Box<dyn StorageProvider>> {
         match &config.backend {
-            StorageBackend::S3 { bucket, region } => {
-                let provider = S3StorageProvider::new(bucket.clone(), region.clone(), config.clone()).await?;
+            StorageBackend::S3 { bucket, region, access_key, secret_key } => {
+                let provider = S3StorageProvider::new(
+                    bucket.clone(), 
+                    region.clone(), 
+                    access_key.clone(),
+                    secret_key.clone(),
+                    config.clone()
+                ).await?;
                 Ok(Box::new(provider))
             }
             StorageBackend::Local { base_path } => {
@@ -132,12 +144,37 @@ pub struct S3StorageProvider {
 }
 
 impl S3StorageProvider {
-    pub async fn new(bucket: String, region: String, config: StorageConfig) -> Result<Self> {
-        // Create AWS config
-        let aws_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_config::Region::new(region.clone()))
-            .load()
-            .await;
+    pub async fn new(
+        bucket: String, 
+        region: String, 
+        access_key: Option<String>,
+        secret_key: Option<String>,
+        config: StorageConfig
+    ) -> Result<Self> {
+        // Create AWS config with optional custom credentials
+        let aws_config = if let (Some(access_key), Some(secret_key)) = (access_key.clone(), secret_key.clone()) {
+            debug!("Using custom AWS credentials for S3 storage provider");
+            use aws_credential_types::Credentials;
+            let credentials = Credentials::new(
+                access_key,
+                secret_key,
+                None,
+                None,
+                "decksaves-storage"
+            );
+            
+            aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .region(aws_config::Region::new(region.clone()))
+                .credentials_provider(credentials)
+                .load()
+                .await
+        } else {
+            debug!("Using default AWS credentials for S3 storage provider");
+            aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .region(aws_config::Region::new(region.clone()))
+                .load()
+                .await
+        };
 
         let client = aws_sdk_s3::Client::new(&aws_config);
 
@@ -169,6 +206,13 @@ impl StorageProvider for S3StorageProvider {
     ) -> Result<StorageResult> {
         let key = self.get_object_key(game_name, file_path, &version.version_id);
         
+        debug!("🔧 S3 Upload Details:");
+        debug!("   Bucket: {}", self.bucket);
+        debug!("   Region: {}", self.region);
+        debug!("   Key: {}", key);
+        debug!("   Data size: {} bytes", data.len());
+        debug!("   Version ID: {}", version.version_id);
+        
         let mut put_request = self.client
             .put_object()
             .bucket(&self.bucket)
@@ -182,10 +226,16 @@ impl StorageProvider for S3StorageProvider {
             .metadata("file-hash", &version.hash)
             .metadata("timestamp", version.timestamp.to_rfc3339());
 
+        debug!("📤 Sending S3 PutObject request...");
         let result = put_request.send().await;
 
         match result {
-            Ok(_) => {
+            Ok(output) => {
+                debug!("✅ S3 PutObject successful!");
+                debug!("   ETag: {:?}", output.e_tag());
+                debug!("   Server Side Encryption: {:?}", output.server_side_encryption());
+                debug!("   Version ID (S3): {:?}", output.version_id());
+                
                 let mut metadata = HashMap::new();
                 metadata.insert("s3_bucket".to_string(), self.bucket.clone());
                 metadata.insert("s3_key".to_string(), key);
@@ -197,11 +247,15 @@ impl StorageProvider for S3StorageProvider {
                     error: None,
                 })
             }
-            Err(e) => Ok(StorageResult {
-                success: false,
-                metadata: HashMap::new(),
-                error: Some(e.to_string()),
-            }),
+            Err(e) => {
+                error!("❌ S3 PutObject failed: {}", e);
+                debug!("   Error details: {:?}", e);
+                Ok(StorageResult {
+                    success: false,
+                    metadata: HashMap::new(),
+                    error: Some(e.to_string()),
+                })
+            }
         }
     }
 
@@ -355,6 +409,8 @@ impl StorageProvider for S3StorageProvider {
         StorageBackend::S3 {
             bucket: self.bucket.clone(),
             region: self.region.clone(),
+            access_key: None, // Don't expose credentials in backend info
+            secret_key: None,
         }
     }
 }

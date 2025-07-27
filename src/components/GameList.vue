@@ -6,6 +6,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import type { Game } from '../types'
 import SteamDiscovery from './SteamDiscovery.vue'
 import VersionHistory from './VersionHistory.vue'
+import SyncProgressModal from './SyncProgressModal.vue'
 
 interface Emits {
   (e: 'game-added', game: Game): void
@@ -30,6 +31,10 @@ const newGame = ref({
   save_paths: [''],
   sync_enabled: true
 })
+
+// Progress modal state
+const showProgressModal = ref(false)
+const progressGameName = ref('')
 
 // Persistence helpers
 const SYNC_STATUS_KEY = 'decksaves_sync_status'
@@ -313,6 +318,71 @@ const syncGameWithVersioning = async (game: Game) => {
   }
 }
 
+const unifiedSyncGame = async (game: Game) => {
+  try {
+    // Show progress modal
+    progressGameName.value = game.id
+    showProgressModal.value = true
+    
+    // Set loading state with timestamp
+    updateSyncStatus(game.id, '🚀 Starting unified sync (smart + versioning + progress)...', true)
+    
+    console.log(`🚀 Starting unified sync for game: ${game.id}`)
+    console.log(`📋 This will perform: Smart Sync + Versioning + Progress Tracking`)
+    await invoke('unified_sync_game', { gameName: game.id })
+    console.log(`✅ Unified sync command sent for game: ${game.id}`)
+  } catch (error) {
+    console.error('❌ Failed to start unified sync:', error)
+    updateSyncStatus(game.id, 'Unified sync failed', false, error as string)
+    showProgressModal.value = false
+    // Clear error after 5 seconds
+    setTimeout(() => {
+      if (syncStatus.value[game.id]?.error) {
+        delete syncStatus.value[game.id]
+        persistSyncStatus()
+      }
+    }, 5000)
+  }
+}
+
+const onProgressModalClose = () => {
+  showProgressModal.value = false
+  progressGameName.value = ''
+}
+
+const onSyncCompleted = (summary: any) => {
+  const gameId = progressGameName.value
+  updateSyncStatus(gameId, `🎉 Unified sync completed: ${summary.files_uploaded} uploaded, ${summary.files_downloaded} downloaded, ${summary.conflicts_resolved} conflicts resolved`, false)
+  console.log('✅ Unified sync completed with summary:', summary)
+}
+
+const onSyncError = (error: string) => {
+  const gameId = progressGameName.value
+  updateSyncStatus(gameId, 'Unified sync failed', false, error)
+}
+
+const initializeSmartSync = async (game: Game) => {
+  try {
+    // Set loading state
+    updateSyncStatus(game.id, 'Initializing smart sync...', true)
+    
+    console.log(`Initializing smart sync for game: ${game.id}`)
+    await invoke('initialize_smart_sync', { gameName: game.id })
+    console.log(`Smart sync initialization command sent for game: ${game.id}`)
+    updateSyncStatus(game.id, 'Smart sync initialized', false)
+  } catch (error) {
+    console.error('Failed to initialize smart sync:', error)
+    updateSyncStatus(game.id, 'Smart sync initialization failed', false, error as string)
+    // Clear error after 5 seconds
+    setTimeout(() => {
+      if (syncStatus.value[game.id]?.error) {
+        delete syncStatus.value[game.id]
+        persistSyncStatus()
+      }
+    }, 5000)
+  }
+}
+
 const showVersionHistoryModal = (game: Game) => {
   // For now, show history for the first save path
   // TODO: Allow user to select which save path to view
@@ -564,24 +634,16 @@ const toggleWatching = async (game: Game) => {
           </label>
           
           <button 
-            class="btn btn-primary"
-            @click="syncGame(game)"
+            class="btn btn-primary unified-sync-btn"
+            @click="unifiedSyncGame(game)"
             :disabled="loading || syncStatus[game.id]?.loading"
+            title="🚀 Unified Sync: Smart sync + Versioning + Progress tracking (All-in-one)"
           >
-            {{ syncStatus[game.id]?.loading ? 'Syncing...' : 'Sync Now' }}
+            {{ syncStatus[game.id]?.loading ? '🔄 Syncing...' : '🚀 Unified Sync' }}
           </button>
 
-          <!-- Versioning Buttons -->
+          <!-- Versioning Controls -->
           <div class="versioning-controls">
-            <button 
-              class="btn btn-secondary"
-              @click="syncGameWithVersioning(game)"
-              :disabled="loading || syncStatus[game.id]?.loading"
-              title="Sync with version history"
-            >
-              🕒 Versioned Sync
-            </button>
-            
             <button 
               class="btn btn-outline"
               @click="showVersionHistoryModal(game)"
@@ -783,6 +845,15 @@ const toggleWatching = async (game: Game) => {
       />
     </div>
   </div>
+
+  <!-- Sync Progress Modal -->
+  <SyncProgressModal
+    :visible="showProgressModal"
+    :game-name="progressGameName"
+    @close="onProgressModalClose"
+    @completed="onSyncCompleted"
+    @error="onSyncError"
+  />
 </template>
 
 <style scoped>
@@ -1099,6 +1170,76 @@ const toggleWatching = async (game: Game) => {
 .btn-secondary:hover:not(:disabled) {
   background-color: var(--bg-secondary);
   color: var(--text-primary);
+}
+
+.btn-special {
+  background: linear-gradient(45deg, #3b82f6, #8b5cf6);
+  color: white;
+  border: none;
+  font-weight: 600;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-special:hover:not(:disabled) {
+  background: linear-gradient(45deg, #2563eb, #7c3aed);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.btn-special:disabled {
+  background: #9ca3af;
+  transform: none;
+  box-shadow: none;
+}
+
+.btn-accent {
+  background: linear-gradient(45deg, #f59e0b, #ea580c);
+  color: white;
+  border: none;
+  font-weight: 600;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-accent:hover:not(:disabled) {
+  background: linear-gradient(45deg, #d97706, #dc2626);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+
+.btn-accent:disabled {
+  background: #9ca3af;
+  transform: none;
+  box-shadow: none;
+}
+
+.unified-sync-btn {
+  background: linear-gradient(45deg, #10b981, #3b82f6, #8b5cf6) !important;
+  color: white !important;
+  border: none !important;
+  font-weight: 700 !important;
+  font-size: 1rem !important;
+  padding: 0.75rem 1.5rem !important;
+  border-radius: 8px !important;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s ease;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+}
+
+.unified-sync-btn:hover:not(:disabled) {
+  background: linear-gradient(45deg, #059669, #2563eb, #7c3aed) !important;
+  transform: translateY(-2px) !important;
+  box-shadow: 0 6px 20px rgba(16, 185, 129, 0.4) !important;
+}
+
+.unified-sync-btn:disabled {
+  background: linear-gradient(45deg, #9ca3af, #9ca3af, #9ca3af) !important;
+  transform: none !important;
+  box-shadow: none !important;
+  opacity: 0.7;
 }
 
 .sync-status {

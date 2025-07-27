@@ -8,6 +8,8 @@ use decksaves_core::{
     FileVersion,
     watcher::WatcherManager,
     steam::{SteamDetector, SteamGame},
+    SyncProgress,
+    ProgressCallback,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -993,6 +995,256 @@ pub async fn sync_game_with_versioning(game_name: String, state: State<'_, AppSt
     }
 }
 
+/// Progress callback that emits events to the frontend
+struct TauriProgressCallback {
+    app_handle: AppHandle,
+    game_name: String,
+}
+
+impl TauriProgressCallback {
+    fn new(app_handle: AppHandle, game_name: String) -> Self {
+        Self { app_handle, game_name }
+    }
+}
+
+impl ProgressCallback for TauriProgressCallback {
+    fn on_progress(&self, progress: SyncProgress) {
+        let progress_payload = serde_json::json!({
+            "game_name": self.game_name,
+            "operation": progress.operation,
+            "current_step": progress.current_step,
+            "total_steps": progress.total_steps,
+            "current_file": progress.current_file,
+            "bytes_transferred": progress.bytes_transferred,
+            "total_bytes": progress.total_bytes,
+            "percentage": progress.percentage,
+            "message": progress.message,
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        });
+        
+        if let Err(e) = self.app_handle.emit("sync-progress-detailed", &progress_payload) {
+            error!("Failed to emit sync progress: {}", e);
+        }
+    }
+}
+
+#[command]
+pub async fn unified_sync_game(
+    game_name: String, 
+    state: State<'_, AppState>,
+    app_handle: AppHandle
+) -> Result<String, String> {
+    info!("🚀 unified_sync_game command called for: {}", game_name);
+    debug!("Starting unified sync process - this combines smart sync + versioning + progress tracking");
+    
+    // Emit sync started event
+    let started_payload = serde_json::json!({
+        "game_name": game_name,
+        "sync_type": "unified",
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    });
+    app_handle.emit("sync-started", &started_payload).map_err(|e| {
+        error!("Failed to emit sync-started event: {}", e);
+        e.to_string()
+    })?;
+    debug!("✅ Emitted sync-started event");
+    
+    // Load config
+    debug!("📋 Loading configuration...");
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        let error_msg = format!("Failed to load configuration: {}", e);
+        error!("{}", error_msg);
+        let _ = app_handle.emit("sync-error", serde_json::json!({
+            "game_name": game_name,
+            "error": error_msg,
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        }));
+        e.to_string()
+    })?;
+    debug!("✅ Configuration loaded successfully");
+    
+    // Check if game exists
+    debug!("🔍 Checking if game '{}' exists in configuration...", game_name);
+    let game_config = match config.games.get(&game_name) {
+        Some(game) => {
+            debug!("✅ Game found - sync_enabled: {}, save_paths: {:?}", 
+                   game.sync_enabled, game.save_paths);
+            game
+        }
+        None => {
+            let error_msg = format!("Game '{}' not found in configuration", game_name);
+            error!("{}", error_msg);
+            let _ = app_handle.emit("sync-error", serde_json::json!({
+                "game_name": game_name,
+                "error": error_msg,
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            }));
+            return Err(error_msg);
+        }
+    };
+    
+    // Check if sync is enabled
+    if !game_config.sync_enabled {
+        let error_msg = format!("Sync is disabled for game '{}'", game_name);
+        info!("{}", error_msg);
+        let _ = app_handle.emit("sync-error", serde_json::json!({
+            "game_name": game_name,
+            "error": error_msg,
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        }));
+        return Err(error_msg);
+    }
+    
+    // Check storage configuration
+    debug!("🔧 Checking storage configuration...");
+    debug!("Storage config - use_local_storage: {}, s3_bucket: {:?}", 
+           config.use_local_storage, config.s3_bucket);
+    
+    if !config.use_local_storage {
+        // Check AWS configuration for S3
+        let has_credentials = match (config.get_aws_access_key(), config.get_aws_secret_key()) {
+            (Ok(Some(access_key)), Ok(Some(secret_key))) => {
+                debug!("✅ Found encrypted AWS credentials: access_key={}, secret_key={}", 
+                       if access_key.is_empty() { "empty" } else { "present" },
+                       if secret_key.is_empty() { "empty" } else { "present" });
+                !access_key.is_empty() && !secret_key.is_empty()
+            },
+            (access_result, secret_result) => {
+                debug!("❌ Failed to get AWS credentials: access_key={:?}, secret_key={:?}", 
+                       access_result, secret_result);
+                false
+            }
+        };
+        
+        if config.s3_bucket.is_none() || !has_credentials {
+            let error_msg = "AWS configuration incomplete. Please set S3 bucket and AWS credentials in settings.".to_string();
+            error!("{}", error_msg);
+            let _ = app_handle.emit("sync-error", serde_json::json!({
+                "game_name": game_name,
+                "error": error_msg,
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            }));
+            return Err(error_msg);
+        }
+        debug!("✅ AWS configuration validated");
+    } else {
+        debug!("✅ Using local storage configuration");
+    }
+    
+    // Create versioned sync handler with progress callback
+    debug!("🔧 Creating VersionedGameSaveSync handler...");
+    let mut sync_handler = VersionedGameSaveSync::new(config.clone()).await.map_err(|e| {
+        let error_msg = format!("Failed to create sync handler: {}", e);
+        error!("{}", error_msg);
+        let _ = app_handle.emit("sync-error", serde_json::json!({
+            "game_name": game_name,
+            "error": error_msg,
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        }));
+        e.to_string()
+    })?;
+    debug!("✅ Sync handler created successfully");
+    
+    // Create progress callback
+    debug!("🔧 Setting up progress tracking...");
+    let progress_callback = TauriProgressCallback::new(app_handle.clone(), game_name.clone());
+    
+    // Perform unified sync with progress tracking
+    debug!("🚀 Starting unified sync operation...");
+    let sync_result = sync_handler.unified_sync_game(&game_name, Some(Box::new(progress_callback))).await;
+    
+    match sync_result {
+        Ok(summary) => {
+            info!("🎉 Unified sync completed successfully for: {}", game_name);
+            debug!("Sync summary: uploaded={}, downloaded={}, bytes={}, conflicts={}", 
+                   summary.files_uploaded, summary.files_downloaded, 
+                   summary.total_bytes_transferred, summary.conflicts_resolved);
+            
+            // Record sync timestamp
+            if let Ok(mut history) = state.sync_history.lock() {
+                let timestamp = chrono::Utc::now().to_rfc3339();
+                debug!("✅ Recording sync timestamp: {}", timestamp);
+                history.insert(game_name.clone(), timestamp);
+            }
+            
+            // Emit completion event
+            let result = format!("🎉 Unified sync completed: {} files uploaded, {} files downloaded, {} conflicts resolved", 
+                                summary.files_uploaded, summary.files_downloaded, summary.conflicts_resolved);
+            
+            app_handle.emit("sync-completed", serde_json::json!({
+                "game_name": game_name,
+                "result": result,
+                "sync_type": "unified",
+                "summary": {
+                    "files_uploaded": summary.files_uploaded,
+                    "files_downloaded": summary.files_downloaded,
+                    "total_bytes_transferred": summary.total_bytes_transferred,
+                    "remote_versions_merged": summary.remote_versions_merged,
+                    "manifest_uploaded": summary.manifest_uploaded,
+                    "conflicts_resolved": summary.conflicts_resolved,
+                    "file_details": summary.file_details
+                },
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            })).map_err(|e| {
+                error!("Failed to emit sync-completed event: {}", e);
+                e.to_string()
+            })?;
+            debug!("✅ Emitted sync-completed event");
+            
+            Ok(result)
+        }
+        Err(e) => {
+            let error_msg = format!("Unified sync failed: {}", e);
+            error!("{}", error_msg);
+            debug!("Sync failure details: {:?}", e);
+            let _ = app_handle.emit("sync-error", serde_json::json!({
+                "game_name": game_name,
+                "error": error_msg,
+                "sync_type": "unified",
+                "timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            }));
+            Err(error_msg)
+        }
+    }
+}
+
+#[command]
+pub async fn sync_game_with_progress(
+    game_name: String, 
+    state: State<'_, AppState>,
+    app_handle: AppHandle
+) -> Result<String, String> {
+    info!("🔧 sync_game_with_progress is deprecated, redirecting to unified_sync_game");
+    unified_sync_game(game_name, state, app_handle).await
+}
+
 #[command]
 pub async fn get_version_history(
     game_name: String, 
@@ -1007,17 +1259,18 @@ pub async fn get_version_history(
         e.to_string()
     })?;
     
-    let sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
+    let mut sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
         error!("Failed to create VersionedGameSaveSync: {}", e);
         e.to_string()
     })?;
     
-    let history = sync_handler.get_version_history(&game_name, &file_path).map_err(|e| {
+    // Use the async version that syncs with S3 first
+    let history = sync_handler.get_version_history(&game_name, &file_path).await.map_err(|e| {
         error!("Failed to get version history: {}", e);
         e.to_string()
     })?;
     
-    info!("Found {} versions for {} - {}", history.len(), game_name, file_path);
+    info!("Found {} versions for {} - {} (including S3 versions)", history.len(), game_name, file_path);
     Ok(history)
 }
 
@@ -1159,4 +1412,30 @@ pub async fn test_s3_connection(config: SyncConfig) -> Result<String, String> {
             Err(format!("S3 connection test failed: {}", e))
         }
     }
+}
+
+#[command]
+pub async fn initialize_smart_sync(
+    game_name: String,
+    state: State<'_, AppState>
+) -> Result<String, String> {
+    info!("initialize_smart_sync command called for game: {}", game_name);
+    
+    let config = state.config_manager.load_config().await.map_err(|e| {
+        error!("Failed to load config: {}", e);
+        e.to_string()
+    })?;
+    
+    let mut sync_handler = VersionedGameSaveSync::new(config).await.map_err(|e| {
+        error!("Failed to create VersionedGameSaveSync: {}", e);
+        e.to_string()
+    })?;
+    
+    sync_handler.initialize_game_sync(&game_name).await.map_err(|e| {
+        error!("Failed to initialize smart sync for game {}: {}", game_name, e);
+        e.to_string()
+    })?;
+    
+    info!("Successfully initialized smart sync for game: {}", game_name);
+    Ok(format!("Smart sync initialized for {} - local and cloud data merged safely", game_name))
 }
